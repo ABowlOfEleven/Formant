@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/audio", "crates/app", "crates/vst3"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+# GPLv3: Formant hosts VST3 plugins via Steinberg's interface definitions,
+# which are licensed GPL-3.0-or-later (or a Steinberg commercial license).
+license = "GPL-3.0-or-later"
+authors = ["Ethan Belanger <belangerethan@gmail.com>"]
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+ron = "0.8"
+rtrb = "0.3"
+nnnoiseless = { version = "0.5", default-features = false }
+ctrlc = "3"
+eframe = { version = "0.34", default-features = false, features = ["glow", "default_fonts"] }
+
+formant-core = { path = "crates/core" }
+formant-audio = { path = "crates/audio" }
+formant-vst3 = { path = "crates/vst3" }
+json5 = "0.4"
+
+[profile.release]
+# Audio DSP wants aggressive optimization; we tune the RT path here later.
+lto = "thin"
+codegen-units = 1
