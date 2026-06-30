@@ -46,12 +46,13 @@ pub enum NodeKind {
     Limiter,
     Gain,
     Makeup,
+    Mix,
     Vst3,
 }
 
 impl NodeKind {
     /// Effect kinds the user can add (Input/Output are fixed).
-    pub const EFFECTS: [NodeKind; 10] = [
+    pub const EFFECTS: [NodeKind; 11] = [
         NodeKind::HighPass,
         NodeKind::Denoise,
         NodeKind::Gate,
@@ -62,6 +63,7 @@ impl NodeKind {
         NodeKind::Limiter,
         NodeKind::Gain,
         NodeKind::Makeup,
+        NodeKind::Mix,
     ];
 
     pub fn label(self) -> &'static str {
@@ -78,6 +80,7 @@ impl NodeKind {
             NodeKind::Limiter => "Limiter",
             NodeKind::Gain => "Gain",
             NodeKind::Makeup => "Makeup",
+            NodeKind::Mix => "Mix",
             NodeKind::Vst3 => "VST3",
         }
     }
@@ -107,6 +110,7 @@ impl NodeKind {
             NodeKind::Limiter => NodeParams::Limiter { ceiling_db: -1.0 },
             NodeKind::Gain => NodeParams::Gain { gain_db: 0.0 },
             NodeKind::Makeup => NodeParams::Makeup { gain_db: 0.0 },
+            NodeKind::Mix => NodeParams::Mix { gain_db: 0.0 },
             NodeKind::Vst3 => NodeParams::Vst3 {
                 binary: String::new(),
                 name: "VST3".into(),
@@ -140,6 +144,8 @@ pub enum NodeParams {
     Limiter { ceiling_db: f32 },
     Gain { gain_db: f32 },
     Makeup { gain_db: f32 },
+    /// Sums all of its inputs (parallel/blend routing), with an output trim.
+    Mix { gain_db: f32 },
     /// A hosted VST3 plugin. `params` persists edited (id, normalized) values so
     /// presets remember the plugin's settings; re-applied on instantiation.
     Vst3 { binary: String, name: String, params: Vec<(u32, f64)> },
@@ -160,6 +166,7 @@ impl NodeParams {
             NodeParams::Limiter { .. } => NodeKind::Limiter,
             NodeParams::Gain { .. } => NodeKind::Gain,
             NodeParams::Makeup { .. } => NodeKind::Makeup,
+            NodeParams::Mix { .. } => NodeKind::Mix,
             NodeParams::Vst3 { .. } => NodeKind::Vst3,
         }
     }
@@ -248,14 +255,21 @@ impl Graph {
         self.node(id).map(|n| n.params.kind())
     }
 
-    /// Connect `from`'s output to `to`'s input. Each input accepts one source,
-    /// so any existing connection into `to` is replaced. Self-loops and feeding
-    /// the Input node are rejected.
+    /// Connect `from`'s output to `to`'s input. Most nodes take a single source,
+    /// so an existing connection into `to` is replaced; a `Mix` node accepts many
+    /// inputs and sums them, so connections accumulate (deduped). Self-loops and
+    /// feeding the Input node are rejected. A node's output may fan out to many
+    /// destinations (that's how you "split" a signal — no dedicated node needed).
     pub fn connect(&mut self, from: NodeId, to: NodeId) {
         if from == to || self.kind_of(to) == Some(NodeKind::Input) {
             return;
         }
-        self.connections.retain(|c| c.to != to);
+        if self.kind_of(to) == Some(NodeKind::Mix) {
+            // Multi-input: keep prior sources, just avoid a duplicate edge.
+            self.connections.retain(|c| !(c.from == from && c.to == to));
+        } else {
+            self.connections.retain(|c| c.to != to);
+        }
         self.connections.push(Connection { from, to });
     }
 
@@ -275,8 +289,9 @@ impl Graph {
         self.nodes.iter().find(|n| n.params.kind() == NodeKind::Output).map(|n| n.id)
     }
 
-    /// The active execution path, walking upstream from Output. Returns node ids
-    /// in process order. Empty if there's no Output node.
+    /// The active execution path, walking upstream from Output following the
+    /// single-input chain. Useful for the linear channel-strip view; for the
+    /// full DAG (parallel branches) use [`Graph::exec_order`].
     pub fn exec_path(&self) -> Vec<NodeId> {
         let Some(out) = self.output_id() else {
             return Vec::new();
@@ -292,6 +307,111 @@ impl Graph {
         }
         path.reverse();
         path
+    }
+
+    /// All direct inputs feeding each node (`to` → list of `from`s), in the
+    /// order they were connected. Nodes with no inputs are absent.
+    pub fn upstreams_map(&self) -> HashMap<NodeId, Vec<NodeId>> {
+        let mut m: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for c in &self.connections {
+            m.entry(c.to).or_default().push(c.from);
+        }
+        m
+    }
+
+    /// A topological execution order over *all* nodes (Kahn's algorithm), so a
+    /// node is always processed after every node that feeds it. Handles parallel
+    /// branches and multi-input `Mix` nodes; any nodes in a cycle are appended
+    /// last (defensive — the editor shouldn't create cycles).
+    pub fn exec_order(&self) -> Vec<NodeId> {
+        let mut indeg: HashMap<NodeId, usize> =
+            self.nodes.iter().map(|n| (n.id, 0usize)).collect();
+        for c in &self.connections {
+            if let Some(d) = indeg.get_mut(&c.to) {
+                *d += 1;
+            }
+        }
+        // Seed with zero-in-degree nodes, preserving node declaration order.
+        let mut queue: Vec<NodeId> =
+            self.nodes.iter().filter(|n| indeg[&n.id] == 0).map(|n| n.id).collect();
+        let mut order = Vec::with_capacity(self.nodes.len());
+        let mut qi = 0;
+        while qi < queue.len() {
+            let n = queue[qi];
+            qi += 1;
+            order.push(n);
+            for c in &self.connections {
+                if c.from == n {
+                    if let Some(d) = indeg.get_mut(&c.to) {
+                        *d -= 1;
+                        if *d == 0 {
+                            queue.push(c.to);
+                        }
+                    }
+                }
+            }
+        }
+        if order.len() < self.nodes.len() {
+            for n in &self.nodes {
+                if !order.contains(&n.id) {
+                    order.push(n.id);
+                }
+            }
+        }
+        order
+    }
+
+    /// A showcase chain using parallel routing: the cleaned voice is split into a
+    /// dry path, a heavily-compressed parallel path, and a saturated path, all
+    /// blended back together through a `Mix`, then EQ'd and limited. Demonstrates
+    /// parallel compression, blend-in saturation, and wet/dry balance.
+    pub fn parallel_demo() -> Self {
+        use NodeParams as P;
+        let mut g = Graph { nodes: Vec::new(), connections: Vec::new(), next_id: 1 };
+        // Front-end cleanup (linear).
+        let input = g.add_node(P::Input, [40.0, 240.0]);
+        let hpf = g.add_node(P::HighPass { cutoff_hz: 85.0 }, [190.0, 240.0]);
+        let denoise = g.add_node(P::Denoise, [340.0, 240.0]);
+        let gate = g.add_node(
+            P::Gate {
+                threshold_db: -42.0,
+                range_db: -60.0,
+                attack_ms: 2.0,
+                hold_ms: 40.0,
+                release_ms: 120.0,
+                vad_gate: true,
+            },
+            [490.0, 240.0],
+        );
+        // Three parallel branches off the cleaned signal.
+        let dry = g.add_node(P::Gain { gain_db: -1.5 }, [690.0, 90.0]);
+        let comp = g.add_node(P::Compressor { threshold_db: -34.0, ratio: 8.0 }, [690.0, 240.0]);
+        let comp_lvl = g.add_node(P::Gain { gain_db: -7.0 }, [860.0, 240.0]);
+        let sat = g.add_node(P::Saturator { drive: 4.0, mix: 1.0 }, [690.0, 380.0]);
+        let sat_lvl = g.add_node(P::Gain { gain_db: -12.0 }, [860.0, 380.0]);
+        // Blend the branches, then finish.
+        let mix = g.add_node(P::Mix { gain_db: 0.0 }, [1040.0, 240.0]);
+        let eq = g.add_node(P::Eq { low_db: 1.0, mid_db: 1.5, high_db: 2.0 }, [1210.0, 240.0]);
+        let limiter = g.add_node(P::Limiter { ceiling_db: -1.0 }, [1380.0, 240.0]);
+        let output = g.add_node(P::Output, [1550.0, 240.0]);
+
+        g.connect(input, hpf);
+        g.connect(hpf, denoise);
+        g.connect(denoise, gate);
+        // Split the gate output three ways.
+        g.connect(gate, dry);
+        g.connect(gate, comp);
+        g.connect(gate, sat);
+        g.connect(comp, comp_lvl);
+        g.connect(sat, sat_lvl);
+        // Sum the branches.
+        g.connect(dry, mix);
+        g.connect(comp_lvl, mix);
+        g.connect(sat_lvl, mix);
+        g.connect(mix, eq);
+        g.connect(eq, limiter);
+        g.connect(limiter, output);
+        g
     }
 }
 
@@ -312,6 +432,8 @@ enum NodeProc {
     Limiter(Limiter),
     Gain(f32),
     Makeup(f32),
+    /// Output trim applied after the executor has summed the node's inputs.
+    Mix(f32),
 }
 
 impl NodeProc {
@@ -347,6 +469,7 @@ impl NodeProc {
             }
             NodeParams::Gain { gain_db } => NodeProc::Gain(crate::dsp::db_to_lin(gain_db)),
             NodeParams::Makeup { gain_db } => NodeProc::Makeup(crate::dsp::db_to_lin(gain_db)),
+            NodeParams::Mix { gain_db } => NodeProc::Mix(crate::dsp::db_to_lin(gain_db)),
         }
     }
 
@@ -363,6 +486,7 @@ impl NodeProc {
             NodeProc::Limiter(_) => NodeKind::Limiter,
             NodeProc::Gain(_) => NodeKind::Gain,
             NodeProc::Makeup(_) => NodeKind::Makeup,
+            NodeProc::Mix(_) => NodeKind::Mix,
         }
     }
 
@@ -399,6 +523,9 @@ impl NodeProc {
                 *g = crate::dsp::db_to_lin(*gain_db);
             }
             (NodeProc::Makeup(g), NodeParams::Makeup { gain_db }) => {
+                *g = crate::dsp::db_to_lin(*gain_db);
+            }
+            (NodeProc::Mix(g), NodeParams::Mix { gain_db }) => {
                 *g = crate::dsp::db_to_lin(*gain_db);
             }
             _ => {}
@@ -467,7 +594,9 @@ impl NodeProc {
                     *o = l.process(x);
                 }
             }
-            NodeProc::Gain(g) | NodeProc::Makeup(g) => {
+            NodeProc::Gain(g) | NodeProc::Makeup(g) | NodeProc::Mix(g) => {
+                // For Mix, `input` is the executor's sum of the node's inputs;
+                // `g` is the output trim.
                 for (o, &x) in output.iter_mut().zip(input) {
                     *o = x * *g;
                 }
@@ -482,7 +611,14 @@ pub struct GraphProcessor {
     /// Host-supplied effects for `Vst3` nodes (installed via the handoff).
     effects: HashMap<NodeId, Box<dyn AudioEffect>>,
     kinds: HashMap<NodeId, NodeKind>,
+    /// Topological execution order over all nodes.
     order: Vec<NodeId>,
+    /// Direct inputs feeding each node (summed when more than one).
+    upstreams: HashMap<NodeId, Vec<NodeId>>,
+    /// The Output node, if any.
+    output: Option<NodeId>,
+    /// Reusable per-node output buffers, so the DAG can fan out and merge.
+    node_bufs: HashMap<NodeId, Vec<Sample>>,
     bypass: HashMap<NodeId, bool>,
     a: Vec<Sample>,
     b: Vec<Sample>,
@@ -498,6 +634,9 @@ impl GraphProcessor {
             effects: HashMap::new(),
             kinds: HashMap::new(),
             order: Vec::new(),
+            upstreams: HashMap::new(),
+            output: None,
+            node_bufs: HashMap::new(),
             bypass: HashMap::new(),
             a: Vec::new(),
             b: Vec::new(),
@@ -529,10 +668,11 @@ impl GraphProcessor {
     /// Reconcile the runtime with an edited graph: add/remove node processors,
     /// update params in place (preserving state), and recompute the path.
     pub fn apply_graph(&mut self, graph: &Graph) {
-        // Drop processors/effects for removed nodes.
+        // Drop processors/effects/buffers for removed nodes.
         self.procs.retain(|id, _| graph.node(*id).is_some());
         self.effects.retain(|id, _| graph.node(*id).is_some());
         self.kinds.retain(|id, _| graph.node(*id).is_some());
+        self.node_bufs.retain(|id, _| graph.node(*id).is_some());
 
         for node in &graph.nodes {
             self.bypass.insert(node.id, node.bypass);
@@ -548,7 +688,9 @@ impl GraphProcessor {
                 }
             }
         }
-        self.order = graph.exec_path();
+        self.order = graph.exec_order();
+        self.upstreams = graph.upstreams_map();
+        self.output = graph.output_id();
     }
 
     pub fn vad(&self) -> f32 {
@@ -565,21 +707,45 @@ impl GraphProcessor {
             output.copy_from_slice(input);
             return;
         }
+        // One reusable output buffer per node, plus the gather/scratch pair.
+        for id in &self.order {
+            self.node_bufs.entry(*id).or_default().resize(n, 0.0);
+        }
         self.a.resize(n, 0.0);
         self.b.resize(n, 0.0);
-        self.a[..n].copy_from_slice(input);
 
         // Take the proc/effect maps out to satisfy the borrow checker while we
         // also touch a/b/last_vad. Cheap (pointer swap), no allocation.
         let mut procs = std::mem::take(&mut self.procs);
         let mut effects = std::mem::take(&mut self.effects);
-        for &id in &self.order {
+
+        for idx in 0..self.order.len() {
+            let id = self.order[idx];
+            let kind = self.kinds.get(&id).copied().unwrap_or(NodeKind::Output);
+
+            // ── Gather this node's input into `a` ──
+            if kind == NodeKind::Input {
+                self.a[..n].copy_from_slice(input);
+            } else {
+                match self.upstreams.get(&id) {
+                    Some(ups) if !ups.is_empty() => {
+                        self.a[..n].copy_from_slice(&self.node_bufs[&ups[0]][..n]);
+                        for u in &ups[1..] {
+                            let src = &self.node_bufs[u];
+                            for i in 0..n {
+                                self.a[i] += src[i];
+                            }
+                        }
+                    }
+                    _ => self.a[..n].fill(0.0),
+                }
+            }
+
+            // ── Process `a` → `b` ──
             let bypassed = self.bypass.get(&id).copied().unwrap_or(false);
-            let is_vst3 = self.kinds.get(&id) == Some(&NodeKind::Vst3);
-            if bypassed {
+            if bypassed || kind == NodeKind::Input || kind == NodeKind::Output {
                 self.b[..n].copy_from_slice(&self.a[..n]);
-            } else if is_vst3 {
-                // VST node: process through the installed effect, else pass through.
+            } else if kind == NodeKind::Vst3 {
                 match effects.get_mut(&id) {
                     Some(effect) => effect.process(&self.a[..n], &mut self.b[..n]),
                     None => self.b[..n].copy_from_slice(&self.a[..n]),
@@ -595,12 +761,21 @@ impl GraphProcessor {
             } else {
                 self.b[..n].copy_from_slice(&self.a[..n]);
             }
-            std::mem::swap(&mut self.a, &mut self.b);
+
+            // ── Store `b` as this node's output ──
+            self.node_bufs.get_mut(&id).unwrap()[..n].copy_from_slice(&self.b[..n]);
         }
         self.procs = procs;
         self.effects = effects;
 
-        output.copy_from_slice(&self.a[..n]);
+        // Final output: the Output node's buffer, or the raw input passed through
+        // if the Output is unwired (so disconnecting it never goes silent).
+        match self.output {
+            Some(out) if self.upstreams.get(&out).is_some_and(|u| !u.is_empty()) => {
+                output.copy_from_slice(&self.node_bufs[&out][..n]);
+            }
+            _ => output.copy_from_slice(input),
+        }
     }
 }
 
@@ -689,6 +864,42 @@ mod tests {
         proc.remove_effect(vst);
         proc.process(&input, &mut output);
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn mix_node_sums_fanned_out_inputs() {
+        // Input fans out to two unity-gain branches that recombine in a Mix.
+        let mut g = Graph { nodes: Vec::new(), connections: Vec::new(), next_id: 1 };
+        let inp = g.add_node(NodeParams::Input, [0.0, 0.0]);
+        let a = g.add_node(NodeParams::Gain { gain_db: 0.0 }, [1.0, 0.0]);
+        let b = g.add_node(NodeParams::Gain { gain_db: 0.0 }, [1.0, 1.0]);
+        let mix = g.add_node(NodeParams::Mix { gain_db: 0.0 }, [2.0, 0.0]);
+        let out = g.add_node(NodeParams::Output, [3.0, 0.0]);
+        g.connect(inp, a);
+        g.connect(inp, b);
+        g.connect(a, mix);
+        g.connect(b, mix);
+        g.connect(mix, out);
+        // The Mix should accept both inputs (multi-input), unlike a normal node.
+        assert_eq!(g.upstreams_map().get(&mix).map(|v| v.len()), Some(2));
+
+        let mut proc = GraphProcessor::new(&g);
+        let input = vec![0.25_f32; 64];
+        let mut output = vec![0.0_f32; 64];
+        proc.process(&input, &mut output);
+        assert!(output.iter().all(|&x| (x - 0.5).abs() < 1e-6), "Mix should sum the two branches");
+    }
+
+    #[test]
+    fn parallel_demo_processes_cleanly() {
+        let g = Graph::parallel_demo();
+        // Topological order must cover every node and never be empty.
+        assert_eq!(g.exec_order().len(), g.nodes.len());
+        let mut proc = GraphProcessor::new(&g);
+        let input: Vec<f32> = (0..480).map(|n| 0.4 * (n as f32 * 0.05).sin()).collect();
+        let mut out = vec![0.0; 480];
+        proc.process(&input, &mut out);
+        assert!(out.iter().all(|x| x.is_finite()), "no NaN/inf from the parallel chain");
     }
 
     #[test]

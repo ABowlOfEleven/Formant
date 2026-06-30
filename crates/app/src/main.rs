@@ -83,6 +83,8 @@ fn run_gui() -> anyhow::Result<()> {
     // COM for this (UI) thread — STA so it coexists with winit's OleInitialize.
     let com = ComGuard::new_sta()?;
     let config = Config::load_or_default();
+    // Seed the bundled example presets on first run.
+    formant_core::Preset::install_factory();
     // Restore the last session's graph, or start from the default chain.
     let graph = formant_core::session::load().unwrap_or_else(Graph::default_chain);
     let engine = Engine::start(&config, graph.clone())?;

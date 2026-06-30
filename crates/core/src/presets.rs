@@ -66,6 +66,27 @@ impl Preset {
         Ok(())
     }
 
+    /// The presets shipped with Formant: a standard single-chain vocal preset and
+    /// a parallel-routing showcase (parallel compression + blend-in saturation).
+    pub fn factory() -> Vec<Preset> {
+        vec![
+            Preset::new("Standard Vocal", Graph::default_chain()),
+            Preset::new("Parallel Vibe", Graph::parallel_demo()),
+        ]
+    }
+
+    /// Write any factory presets that don't already exist on disk, so first-run
+    /// users have working examples. Never overwrites a user's edited copy.
+    pub fn install_factory() {
+        let Some(dir) = Self::dir() else { return };
+        for preset in Self::factory() {
+            let path = dir.join(format!("{}.ron", sanitize(&preset.name)));
+            if !path.exists() {
+                let _ = preset.save();
+            }
+        }
+    }
+
     /// Load every `.ron` preset in the presets directory.
     pub fn load_all() -> Vec<Preset> {
         let Some(dir) = Self::dir() else {
@@ -102,6 +123,14 @@ mod tests {
         let text = preset.to_ron().unwrap();
         let back = Preset::from_ron(&text).unwrap();
         assert_eq!(preset, back);
+    }
+
+    #[test]
+    fn factory_presets_round_trip() {
+        for preset in Preset::factory() {
+            let back = Preset::from_ron(&preset.to_ron().unwrap()).unwrap();
+            assert_eq!(preset, back, "factory preset '{}' must survive RON", preset.name);
+        }
     }
 
     #[test]

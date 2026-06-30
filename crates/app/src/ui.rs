@@ -435,7 +435,7 @@ impl FormantApp {
             ui.label(RichText::new("CHANNEL STRIP").color(theme::CYAN).strong());
             let ids: Vec<NodeId> = self
                 .graph
-                .exec_path()
+                .exec_order()
                 .into_iter()
                 .filter(|id| !matches!(self.graph.kind_of(*id), Some(NodeKind::Input) | Some(NodeKind::Output)))
                 .collect();
@@ -799,6 +799,10 @@ impl FormantApp {
                     ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("gain dB"))
                         .on_hover_text("Volume adjustment in decibels (+ louder, – quieter).");
                 }
+                NodeParams::Mix { gain_db } => {
+                    ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("output dB"))
+                        .on_hover_text("Output trim after summing every wire feeding this node.");
+                }
                 NodeParams::Vst3 { name, params: stored, .. } => {
                     ui.label(RichText::new(name.as_str()).color(theme::MUTED));
                     if self.editors.contains_key(&id)
@@ -1130,7 +1134,7 @@ fn primary_slider(ui: &mut egui::Ui, params: &mut NodeParams) -> bool {
         NodeParams::Eq { mid_db, .. } => Some(ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid")).on_hover_text("Mid boost/cut (presence).")),
         NodeParams::Saturator { drive, .. } => Some(ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive")).on_hover_text("Saturation drive — more = warmer/grittier.")),
         NodeParams::Limiter { ceiling_db } => Some(ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceil")).on_hover_text("Output ceiling — nothing gets louder than this.")),
-        NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } => {
+        NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } | NodeParams::Mix { gain_db } => {
             Some(ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("dB")).on_hover_text("Volume in decibels."))
         }
         _ => {
@@ -1156,6 +1160,7 @@ fn kind_help(kind: NodeKind) -> &'static str {
         NodeKind::Limiter => "A safety ceiling: stops the output from ever getting too loud or clipping. Good as the last node.",
         NodeKind::Gain => "Simple volume trim — boost or cut the level at this point in the chain.",
         NodeKind::Makeup => "Final output volume — bring the processed signal back up to the level you want.",
+        NodeKind::Mix => "Combines multiple wires into one by summing them. Wire several branches in for parallel chains: parallel compression, blend-in saturation, or dry/wet (control each branch's level with a Gain before it).",
         NodeKind::Vst3 => "A third-party VST3 plugin added to your chain. Open its editor for its own controls.",
     }
 }
@@ -1175,6 +1180,7 @@ fn node_accent(kind: NodeKind) -> Color32 {
     match kind {
         NodeKind::Input | NodeKind::Output => theme::MUTED,
         NodeKind::Vst3 => theme::EMBER,
+        NodeKind::Mix => theme::GOOD,
         _ => theme::CYAN,
     }
 }
