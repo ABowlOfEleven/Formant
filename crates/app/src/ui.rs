@@ -57,6 +57,32 @@ pub struct FormantApp {
     last_tab: Option<Tab>,
     // Throttles audio device-loss recovery attempts.
     last_recovery: Option<std::time::Instant>,
+    // Undo/redo of the graph. `undo_baseline` is the last committed snapshot;
+    // edits are committed to history once they settle.
+    undo_stack: Vec<Graph>,
+    redo_stack: Vec<Graph>,
+    undo_baseline: Graph,
+    edit_pending_since: Option<std::time::Instant>,
+    // Spectrum analyzer (Mixer tab).
+    spectrum: crate::spectrum::Spectrum,
+    scope_buf: Vec<f32>,
+    // Gate auto-calibration in progress, if any.
+    calibration: Option<Calibration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CalPhase {
+    Quiet,
+    Talk,
+}
+
+struct Calibration {
+    phase: CalPhase,
+    since: std::time::Instant,
+    noise_sum: f32,
+    noise_n: u32,
+    voice_sum: f32,
+    voice_n: u32,
 }
 
 /// A VST node parameter as shown in the inspector (normalized value).
@@ -73,7 +99,7 @@ impl FormantApp {
             engine,
             config,
             graph: graph.clone(),
-            last_pushed: graph,
+            last_pushed: graph.clone(),
             tab: Tab::Mixer,
             presets: Preset::load_all(),
             new_preset_name: String::new(),
@@ -95,6 +121,13 @@ impl FormantApp {
             last_session_save: std::time::Instant::now(),
             last_tab: None,
             last_recovery: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            undo_baseline: graph,
+            edit_pending_since: None,
+            spectrum: crate::spectrum::Spectrum::new(),
+            scope_buf: Vec::new(),
+            calibration: None,
         };
         // Scan devices up front so the virtual-cable check is ready on first frame.
         app.refresh_devices();
@@ -220,6 +253,96 @@ impl FormantApp {
         self.render_devices = devices::list(Direction::Render)
             .map(|v| v.into_iter().map(|d| d.name).collect())
             .unwrap_or_default();
+    }
+
+    /// Commit a settled edit into the undo history (called on a debounce, and
+    /// before an undo so an in-progress edit is not lost).
+    fn commit_edit_if_pending(&mut self) {
+        if self.graph != self.undo_baseline {
+            self.undo_stack.push(self.undo_baseline.clone());
+            if self.undo_stack.len() > 64 {
+                self.undo_stack.remove(0);
+            }
+            self.redo_stack.clear();
+            self.undo_baseline = self.graph.clone();
+        }
+        self.edit_pending_since = None;
+    }
+
+    fn undo(&mut self) {
+        self.commit_edit_if_pending();
+        if let Some(prev) = self.undo_stack.pop() {
+            self.redo_stack.push(self.graph.clone());
+            self.graph = prev.clone();
+            self.undo_baseline = prev;
+            self.selected = None;
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(next) = self.redo_stack.pop() {
+            self.undo_stack.push(self.graph.clone());
+            self.graph = next.clone();
+            self.undo_baseline = next;
+            self.selected = None;
+        }
+    }
+
+    /// Begin gate auto-calibration: measure the noise floor, then the voice.
+    fn start_calibration(&mut self) {
+        self.calibration = Some(Calibration {
+            phase: CalPhase::Quiet,
+            since: std::time::Instant::now(),
+            noise_sum: 0.0,
+            noise_n: 0,
+            voice_sum: 0.0,
+            voice_n: 0,
+        });
+    }
+
+    /// Advance calibration each frame, sampling the live input level.
+    fn tick_calibration(&mut self) {
+        let peak = self.engine.meters.in_peak();
+        let Some(cal) = self.calibration.as_mut() else { return };
+        match cal.phase {
+            CalPhase::Quiet => {
+                cal.noise_sum += peak;
+                cal.noise_n += 1;
+                if cal.since.elapsed().as_secs_f32() > 2.0 {
+                    cal.phase = CalPhase::Talk;
+                    cal.since = std::time::Instant::now();
+                }
+            }
+            CalPhase::Talk => {
+                cal.voice_sum += peak;
+                cal.voice_n += 1;
+                if cal.since.elapsed().as_secs_f32() > 2.5 {
+                    self.finish_calibration();
+                }
+            }
+        }
+    }
+
+    fn finish_calibration(&mut self) {
+        let Some(cal) = self.calibration.take() else { return };
+        let to_db = |lin: f32| 20.0 * lin.max(1e-5).log10();
+        let noise_db = to_db(cal.noise_sum / cal.noise_n.max(1) as f32);
+        let voice_db = to_db(cal.voice_sum / cal.voice_n.max(1) as f32);
+        let margin = (0.5 * (voice_db - noise_db)).clamp(4.0, 10.0);
+        let threshold = (noise_db + margin).clamp(-80.0, -6.0);
+
+        let mut set = false;
+        for node in &mut self.graph.nodes {
+            if let NodeParams::Gate { threshold_db, .. } = &mut node.params {
+                *threshold_db = threshold;
+                set = true;
+            }
+        }
+        self.status = if set {
+            format!("gate calibrated: noise {noise_db:.0} dB, voice {voice_db:.0} dB -> threshold {threshold:.0} dB")
+        } else {
+            "no Gate node to calibrate (add one first)".into()
+        };
     }
 
     /// Show whether a virtual audio cable is installed, and help the user get one
@@ -392,6 +515,23 @@ impl eframe::App for FormantApp {
         ui.ctx().request_repaint(); // live meters
         let ctx = ui.ctx().clone();
 
+        // Undo/redo (Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z), unless typing in a field.
+        if !ctx.egui_wants_keyboard_input() {
+            let (undo, redo) = ctx.input(|i| {
+                let cmd = i.modifiers.command;
+                let undo = cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z);
+                let redo = (cmd && i.modifiers.shift && i.key_pressed(egui::Key::Z))
+                    || (cmd && i.key_pressed(egui::Key::Y));
+                (undo, redo)
+            });
+            if undo {
+                self.undo();
+            }
+            if redo {
+                self.redo();
+            }
+        }
+
         // Tray actions.
         for action in crate::tray::poll() {
             match action {
@@ -459,6 +599,11 @@ impl eframe::App for FormantApp {
             self.refresh_devices();
         }
         self.last_tab = Some(self.tab);
+        // Refresh the spectrum bands from the latest output samples.
+        if self.engine.meters.copy_scope(&mut self.scope_buf) {
+            self.spectrum.update(&self.scope_buf);
+        }
+        self.tick_calibration();
         egui::CentralPanel::default().show_inside(ui, |ui| {
             paint_backdrop(ui);
             match self.tab {
@@ -482,6 +627,18 @@ impl eframe::App for FormantApp {
             let _ = formant_core::session::save(&self.graph);
             self.session_dirty = false;
             self.last_session_save = std::time::Instant::now();
+        }
+
+        // Undo history: commit a snapshot once edits settle (~0.5s of no change),
+        // so a slider drag becomes one undo step rather than hundreds.
+        if self.graph != self.undo_baseline {
+            match self.edit_pending_since {
+                None => self.edit_pending_since = Some(std::time::Instant::now()),
+                Some(t) if t.elapsed().as_secs_f32() > 0.5 => self.commit_edit_if_pending(),
+                _ => {}
+            }
+        } else {
+            self.edit_pending_since = None;
         }
     }
 }
@@ -555,9 +712,9 @@ impl FormantApp {
     }
 
     fn tab_mixer(&mut self, ui: &mut egui::Ui) {
-        let (in_peak, out_peak, vad, gr) = {
+        let (in_peak, out_peak, vad, gr, lufs) = {
             let m = &self.engine.meters;
-            (m.in_peak(), m.out_peak(), m.vad(), m.gain_reduction_db())
+            (m.in_peak(), m.out_peak(), m.vad(), m.gain_reduction_db(), m.lufs())
         };
 
         // -- Meters + transport -------------------------------------------
@@ -577,6 +734,18 @@ impl FormantApp {
             meter(ui, "output", out_peak, "Processed level sent to your monitor and the virtual mic.");
             meter(ui, "voice (VAD)", vad, "How confident the AI is that you're speaking right now.");
             meter(ui, "comp GR", (gr / 20.0).clamp(0.0, 1.0), "How much the compressor is currently turning the level down.");
+
+            // Loudness readout (momentary LUFS) with a streaming-target hint.
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("loudness").color(theme::MUTED).small())
+                    .on_hover_text("Momentary loudness in LUFS (ITU-R BS.1770). Many voice-chat and streaming targets sit around -16 LUFS.");
+                let txt = if lufs <= -69.0 { "quiet".to_string() } else { format!("{lufs:.1} LUFS") };
+                let near_target = lufs > -20.0 && lufs < -12.0;
+                ui.label(RichText::new(txt).color(if near_target { theme::GOOD } else { theme::TEXT }).strong());
+            });
+
+            // Spectrum analyzer.
+            spectrum_view(ui, &self.spectrum.bands);
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("mute").color(theme::MUTED).small())
@@ -585,6 +754,31 @@ impl FormantApp {
                 for m in [MuteMode::Vad, MuteMode::PushToTalk, MuteMode::Toggle, MuteMode::AlwaysOpen] {
                     if ui.selectable_label(cur == m, m.label()).on_hover_text(mode_help(m)).clicked() {
                         self.engine.controls.set_mode(m);
+                    }
+                }
+            });
+
+            // Gate auto-calibration.
+            ui.horizontal(|ui| {
+                match &self.calibration {
+                    None => {
+                        if ui
+                            .button("Calibrate gate")
+                            .on_hover_text("Measures your background noise, then your voice, and sets the gate threshold between them. Follow the prompts.")
+                            .clicked()
+                        {
+                            self.start_calibration();
+                        }
+                    }
+                    Some(cal) => {
+                        let (msg, col) = match cal.phase {
+                            CalPhase::Quiet => ("Calibrating: stay quiet...", theme::EMBER),
+                            CalPhase::Talk => ("Calibrating: now talk normally...", theme::GOOD),
+                        };
+                        ui.label(RichText::new(msg).color(col).strong());
+                        if ui.button("Cancel").clicked() {
+                            self.calibration = None;
+                        }
                     }
                 }
             });
@@ -661,12 +855,21 @@ impl FormantApp {
                         self.selected = Some(id);
                         self.tab = Tab::Nodes;
                     }
-                    let mut on = !node.bypass;
-                    if ui.checkbox(&mut on, "on").changed() {
-                        if let Some(n) = self.graph.node_mut(id) {
-                            n.bypass = !on;
+                    ui.horizontal(|ui| {
+                        let mut on = !node.bypass;
+                        if ui.checkbox(&mut on, "on").changed() {
+                            if let Some(n) = self.graph.node_mut(id) {
+                                n.bypass = !on;
+                            }
                         }
-                    }
+                        if ui
+                            .selectable_label(node.solo, RichText::new("solo").color(if node.solo { theme::EMBER } else { theme::MUTED }))
+                            .on_hover_text("Hear only this node's output, to audition it in isolation.")
+                            .clicked()
+                        {
+                            self.graph.set_solo(id, !node.solo);
+                        }
+                    });
                     let mut params = node.params.clone();
                     if primary_slider(ui, &mut params) {
                         if let Some(n) = self.graph.node_mut(id) {
@@ -761,10 +964,35 @@ impl FormantApp {
             .map(|n| (n.id, node_label(&n.params)))
             .collect();
 
-        // Wires (under nodes).
-        for c in &self.graph.connections.clone() {
-            if let (Some(&(fp, ..)), Some(&(tp, ..))) = (layout.get(&c.from), layout.get(&c.to)) {
-                wire(&painter, fp + Vec2::new(ns.x, ns.y * 0.5), tp + Vec2::new(0.0, ns.y * 0.5), theme::CYAN.gamma_multiply(0.85));
+        // Wires (under nodes), each with a midpoint handle to remove it.
+        let mut wire_to_remove: Option<usize> = None;
+        for (i, c) in self.graph.connections.clone().iter().enumerate() {
+            let (Some(&(fp, ..)), Some(&(tp, ..))) = (layout.get(&c.from), layout.get(&c.to)) else {
+                continue;
+            };
+            let a = fp + Vec2::new(ns.x, ns.y * 0.5);
+            let b = tp + Vec2::new(0.0, ns.y * 0.5);
+            let dx = ((b.x - a.x).abs() * 0.5).clamp(40.0, 160.0);
+            let mid = cubic(a, Pos2::new(a.x + dx, a.y), Pos2::new(b.x - dx, b.y), b, 0.5);
+            let handle = Rect::from_center_size(mid, Vec2::splat((18.0 * zoom).max(14.0)));
+            let resp = ui
+                .interact(handle, egui::Id::new(("fmt_wire", i)), Sense::click())
+                .on_hover_text("Remove this connection");
+            let hovered = resp.hovered();
+            wire(&painter, a, b, if hovered { theme::EMBER } else { theme::CYAN.gamma_multiply(0.85) });
+            if hovered {
+                painter.circle_filled(mid, 8.0 * zoom.max(0.7), theme::BG);
+                painter.text(mid, Align2::CENTER_CENTER, "x", FontId::proportional(14.0 * zoom.max(0.7)), theme::EMBER);
+            } else {
+                painter.circle_filled(mid, 2.5 * zoom, theme::CYAN.gamma_multiply(0.5));
+            }
+            if resp.clicked() {
+                wire_to_remove = Some(i);
+            }
+        }
+        if let Some(i) = wire_to_remove {
+            if i < self.graph.connections.len() {
+                self.graph.connections.remove(i);
             }
         }
         if let Some(fid) = self.dragging_from {
@@ -876,6 +1104,16 @@ impl FormantApp {
                     }
                 }
             });
+            ui.horizontal(|ui| {
+                let can_undo = !self.undo_stack.is_empty() || self.graph != self.undo_baseline;
+                let can_redo = !self.redo_stack.is_empty();
+                if ui.add_enabled(can_undo, egui::Button::new("Undo")).on_hover_text("Undo the last edit (Ctrl+Z).").clicked() {
+                    self.undo();
+                }
+                if ui.add_enabled(can_redo, egui::Button::new("Redo")).on_hover_text("Redo (Ctrl+Y).").clicked() {
+                    self.redo();
+                }
+            });
             if ui.button("Reset to default chain").clicked() {
                 self.graph = Graph::default_chain();
                 self.selected = None;
@@ -934,7 +1172,17 @@ impl FormantApp {
             ui.label(RichText::new(node_label(&node.params)).color(theme::EMBER));
             let mut params = node.params;
             let mut on = !node.bypass;
-            ui.checkbox(&mut on, "enabled");
+            let mut solo_clicked = false;
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut on, "enabled");
+                if ui
+                    .selectable_label(node.solo, RichText::new("solo").color(if node.solo { theme::EMBER } else { theme::MUTED }))
+                    .on_hover_text("Hear only this node's output, to audition it in isolation.")
+                    .clicked()
+                {
+                    solo_clicked = true;
+                }
+            });
 
             match &mut params {
                 NodeParams::HighPass { cutoff_hz } => {
@@ -982,6 +1230,36 @@ impl FormantApp {
                         .on_hover_text("How hard the signal is pushed - more = warmer, then grittier.");
                     ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
                         .on_hover_text("Blend between clean (0) and saturated (1).");
+                }
+                NodeParams::Pitch { pitch_semitones, formant_semitones } => {
+                    ui.add(egui::Slider::new(pitch_semitones, -12.0..=12.0).text("pitch"))
+                        .on_hover_text("Shift your pitch up or down in semitones (12 = one octave). Higher is chipmunk, lower is deep.");
+                    ui.add(egui::Slider::new(formant_semitones, -12.0..=12.0).text("formant"))
+                        .on_hover_text("Shift the vocal-tract character without changing pitch. Up sounds smaller/younger, down sounds bigger.");
+                }
+                NodeParams::Reverb { room_size, damping, mix } => {
+                    ui.add(egui::Slider::new(room_size, 0.0..=1.0).text("room"))
+                        .on_hover_text("Size of the space - bigger means a longer tail.");
+                    ui.add(egui::Slider::new(damping, 0.0..=1.0).text("damping"))
+                        .on_hover_text("How quickly the highs fade in the tail.");
+                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
+                        .on_hover_text("Blend between dry (0) and reverberant (1).");
+                }
+                NodeParams::Delay { time_ms, feedback, mix } => {
+                    ui.add(egui::Slider::new(time_ms, 20.0..=1000.0).text("time ms"))
+                        .on_hover_text("Echo spacing in milliseconds.");
+                    ui.add(egui::Slider::new(feedback, 0.0..=0.95).text("feedback"))
+                        .on_hover_text("How much the echo feeds back - higher means more repeats.");
+                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
+                        .on_hover_text("Blend between dry (0) and echoed (1).");
+                }
+                NodeParams::Chorus { depth_ms, rate_hz, mix } => {
+                    ui.add(egui::Slider::new(depth_ms, 0.0..=15.0).text("depth ms"))
+                        .on_hover_text("How wide the pitch wobble swings - more is lusher.");
+                    ui.add(egui::Slider::new(rate_hz, 0.05..=8.0).text("rate Hz"))
+                        .on_hover_text("Speed of the wobble.");
+                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
+                        .on_hover_text("Blend between dry (0) and chorused (1).");
                 }
                 NodeParams::Limiter { ceiling_db } => {
                     ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceiling dB"))
@@ -1054,6 +1332,9 @@ impl FormantApp {
             if let Some(n) = self.graph.node_mut(id) {
                 n.params = params;
                 n.bypass = !on;
+            }
+            if solo_clicked {
+                self.graph.set_solo(id, !node.solo);
             }
 
             if !matches!(kind, NodeKind::Input | NodeKind::Output) {
@@ -1318,6 +1599,25 @@ fn meter(ui: &mut egui::Ui, label: &str, frac: f32, help: &str) {
     });
 }
 
+/// Draw the spectrum analyzer as a row of bars (low frequencies on the left).
+fn spectrum_view(ui: &mut egui::Ui, bands: &[f32]) {
+    let width = ui.available_width().min(620.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 64.0), Sense::hover());
+    resp.on_hover_text("Live frequency spectrum of the processed output. Left is low, right is high.");
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, CornerRadius::same(6), theme::BG);
+    let n = bands.len().max(1);
+    let gap = 2.0;
+    let bw = ((rect.width() - gap * (n as f32 + 1.0)) / n as f32).max(1.0);
+    for (i, &v) in bands.iter().enumerate() {
+        let v = v.clamp(0.0, 1.0);
+        let h = v * (rect.height() - 6.0);
+        let x = rect.left() + gap + i as f32 * (bw + gap);
+        let bar = Rect::from_min_max(Pos2::new(x, rect.bottom() - 3.0 - h), Pos2::new(x + bw, rect.bottom() - 3.0));
+        painter.rect_filled(bar, CornerRadius::same(1), theme::lerp(theme::CYAN, theme::EMBER, v));
+    }
+}
+
 /// A pill-style tab button with a clear active state + accent underline.
 fn tab_button(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(94.0, 30.0), Sense::click());
@@ -1374,6 +1674,8 @@ fn primary_slider(ui: &mut egui::Ui, params: &mut NodeParams) -> bool {
         NodeParams::Compressor { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr")).on_hover_text("Compressor threshold - lower evens out more of your voice.")),
         NodeParams::Eq { mid_db, .. } => Some(ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid")).on_hover_text("Mid boost/cut (presence).")),
         NodeParams::Saturator { drive, .. } => Some(ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive")).on_hover_text("Saturation drive - more = warmer/grittier.")),
+        NodeParams::Pitch { pitch_semitones, .. } => Some(ui.add(egui::Slider::new(pitch_semitones, -12.0..=12.0).text("st")).on_hover_text("Pitch shift in semitones.")),
+        NodeParams::Reverb { mix, .. } | NodeParams::Delay { mix, .. } | NodeParams::Chorus { mix, .. } => Some(ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix")).on_hover_text("Dry/wet blend.")),
         NodeParams::Limiter { ceiling_db } => Some(ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceil")).on_hover_text("Output ceiling - nothing gets louder than this.")),
         NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } | NodeParams::Mix { gain_db } => {
             Some(ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("dB")).on_hover_text("Volume in decibels."))
@@ -1398,6 +1700,10 @@ fn kind_help(kind: NodeKind) -> &'static str {
         NodeKind::Compressor => "Evens out your volume - brings quiet parts up and loud parts down - for a steadier, fuller, more 'pro' sound.",
         NodeKind::Eq => "Tone control: boost or cut lows, mids, and highs to shape your voice.",
         NodeKind::Saturator => "Adds warmth and subtle harmonics like analog gear - gentle at low drive, gritty at high.",
+        NodeKind::Pitch => "Shifts your pitch and/or formants in real time. Pitch makes you higher or lower; formant changes the apparent size of your voice without changing pitch. Adds a little latency.",
+        NodeKind::Reverb => "Adds the sense of a room or space around your voice. Subtle amounts add depth; large amounts sound cavernous.",
+        NodeKind::Delay => "An echo. Short times thicken, longer times repeat. Feedback controls how many repeats.",
+        NodeKind::Chorus => "Thickens and widens your voice by mixing in a slightly detuned, wobbling copy.",
         NodeKind::Limiter => "A safety ceiling: stops the output from ever getting too loud or clipping. Good as the last node.",
         NodeKind::Gain => "Simple volume trim - boost or cut the level at this point in the chain.",
         NodeKind::Makeup => "Final output volume - bring the processed signal back up to the level you want.",

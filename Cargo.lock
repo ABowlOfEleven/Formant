@@ -866,6 +866,7 @@ dependencies = [
  "formant-audio",
  "formant-core",
  "formant-vst3",
+ "realfft",
  "rfd",
  "tray-icon",
  "windows",
@@ -889,6 +890,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "nnnoiseless",
+ "realfft",
  "ron",
  "serde",
 ]

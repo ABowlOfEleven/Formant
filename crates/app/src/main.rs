@@ -6,6 +6,7 @@
 mod engine;
 mod logging;
 mod platform;
+mod spectrum;
 mod theme;
 mod tray;
 mod ui;

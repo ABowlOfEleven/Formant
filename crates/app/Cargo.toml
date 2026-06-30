@@ -18,6 +18,7 @@ ctrlc.workspace = true
 eframe.workspace = true
 rfd = { version = "0.15", default-features = false }
 tray-icon = "0.19"
+realfft = "3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

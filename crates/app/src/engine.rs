@@ -58,6 +58,7 @@ impl Engine {
         let (effect_tx, effect_rx) = mpsc::channel::<EffectCommand>();
 
         let mut processor = GraphProcessor::new(&initial_graph);
+        let mut loudness = formant_core::dsp::Loudness::new(formant_core::SAMPLE_RATE);
         let cb_graph = Arc::clone(&graph);
         let cb_dirty = Arc::clone(&graph_dirty);
         let cb_controls = Arc::clone(&controls);
@@ -93,6 +94,8 @@ impl Engine {
             cb_meters.set_out_peak(peak(output));
             cb_meters.set_vad(processor.vad());
             cb_meters.set_gain_reduction_db(processor.gain_reduction_db());
+            cb_meters.set_lufs(loudness.process(output));
+            cb_meters.push_scope(output);
         }))?;
 
         let hotkey_running = Arc::new(AtomicBool::new(true));

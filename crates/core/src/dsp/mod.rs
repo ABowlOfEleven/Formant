@@ -4,21 +4,31 @@
 //! can run on the real-time audio thread without locking or allocating.
 
 pub mod biquad;
+pub mod chorus;
 pub mod compressor;
 pub mod deesser;
+pub mod delay;
 pub mod denoise;
 pub mod eq;
 pub mod gate;
 pub mod limiter;
+pub mod loudness;
+pub mod pitch;
+pub mod reverb;
 pub mod saturator;
 
 pub use biquad::Biquad;
+pub use chorus::Chorus;
 pub use compressor::Compressor;
 pub use deesser::DeEsser;
+pub use delay::Delay;
 pub use denoise::Denoise;
 pub use eq::Eq;
 pub use gate::Gate;
 pub use limiter::Limiter;
+pub use loudness::Loudness;
+pub use pitch::PitchShifter;
+pub use reverb::Reverb;
 pub use saturator::Saturator;
 
 /// One-pole smoothing coefficient for a time constant in milliseconds. Shared by

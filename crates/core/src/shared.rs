@@ -5,6 +5,10 @@
 //! so neither side ever blocks.
 
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
+
+/// How many recent output samples are kept for the UI spectrum analyzer.
+const SCOPE_LEN: usize = 2048;
 
 #[derive(Debug, Default)]
 pub struct Meters {
@@ -12,6 +16,10 @@ pub struct Meters {
     out_peak: AtomicU32,
     vad: AtomicU32,
     gain_reduction_db: AtomicU32,
+    lufs: AtomicU32,
+    /// A rolling window of recent output samples for the spectrum display. The
+    /// audio thread only ever `try_lock`s it, so it never blocks.
+    scope: Mutex<Vec<f32>>,
 }
 
 impl Meters {
@@ -20,6 +28,36 @@ impl Meters {
     }
     fn load(slot: &AtomicU32) -> f32 {
         f32::from_bits(slot.load(Ordering::Relaxed))
+    }
+
+    pub fn set_lufs(&self, v: f32) {
+        Self::store(&self.lufs, v);
+    }
+    pub fn lufs(&self) -> f32 {
+        Self::load(&self.lufs)
+    }
+
+    /// Append recent output samples to the scope ring (best-effort, non-blocking).
+    pub fn push_scope(&self, block: &[f32]) {
+        if let Ok(mut buf) = self.scope.try_lock() {
+            buf.extend_from_slice(block);
+            let len = buf.len();
+            if len > SCOPE_LEN {
+                buf.drain(0..len - SCOPE_LEN);
+            }
+        }
+    }
+
+    /// Copy the scope window out for the UI. Returns false if it was empty or busy.
+    pub fn copy_scope(&self, out: &mut Vec<f32>) -> bool {
+        match self.scope.try_lock() {
+            Ok(buf) if buf.len() >= 1024 => {
+                out.clear();
+                out.extend_from_slice(&buf);
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn set_in_peak(&self, v: f32) {

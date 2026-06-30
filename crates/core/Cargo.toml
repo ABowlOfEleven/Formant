@@ -9,3 +9,4 @@ anyhow.workspace = true
 serde.workspace = true
 ron.workspace = true
 nnnoiseless.workspace = true
+realfft = "3"

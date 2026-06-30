@@ -15,7 +15,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dsp::{Biquad, Compressor, DeEsser, Denoise, Eq, Gate, Limiter, Saturator};
+use crate::dsp::{
+    Biquad, Chorus, Compressor, DeEsser, Delay, Denoise, Eq, Gate, Limiter, PitchShifter, Reverb,
+    Saturator,
+};
 use crate::engine::GateOverride;
 use crate::types::Sample;
 use crate::SAMPLE_RATE;
@@ -45,6 +48,10 @@ pub enum NodeKind {
     Compressor,
     Eq,
     Saturator,
+    Pitch,
+    Reverb,
+    Delay,
+    Chorus,
     Limiter,
     Gain,
     Makeup,
@@ -54,7 +61,7 @@ pub enum NodeKind {
 
 impl NodeKind {
     /// Effect kinds the user can add (Input/Output are fixed).
-    pub const EFFECTS: [NodeKind; 11] = [
+    pub const EFFECTS: [NodeKind; 15] = [
         NodeKind::HighPass,
         NodeKind::Denoise,
         NodeKind::Gate,
@@ -62,6 +69,10 @@ impl NodeKind {
         NodeKind::Compressor,
         NodeKind::Eq,
         NodeKind::Saturator,
+        NodeKind::Pitch,
+        NodeKind::Reverb,
+        NodeKind::Delay,
+        NodeKind::Chorus,
         NodeKind::Limiter,
         NodeKind::Gain,
         NodeKind::Makeup,
@@ -79,6 +90,10 @@ impl NodeKind {
             NodeKind::Compressor => "Compressor",
             NodeKind::Eq => "EQ",
             NodeKind::Saturator => "Saturator",
+            NodeKind::Pitch => "Pitch",
+            NodeKind::Reverb => "Reverb",
+            NodeKind::Delay => "Delay",
+            NodeKind::Chorus => "Chorus",
             NodeKind::Limiter => "Limiter",
             NodeKind::Gain => "Gain",
             NodeKind::Makeup => "Makeup",
@@ -109,6 +124,10 @@ impl NodeKind {
             NodeKind::Compressor => NodeParams::Compressor { threshold_db: -18.0, ratio: 3.0 },
             NodeKind::Eq => NodeParams::Eq { low_db: 0.0, mid_db: 0.0, high_db: 0.0 },
             NodeKind::Saturator => NodeParams::Saturator { drive: 2.0, mix: 0.3 },
+            NodeKind::Pitch => NodeParams::Pitch { pitch_semitones: 0.0, formant_semitones: 0.0 },
+            NodeKind::Reverb => NodeParams::Reverb { room_size: 0.5, damping: 0.5, mix: 0.25 },
+            NodeKind::Delay => NodeParams::Delay { time_ms: 250.0, feedback: 0.3, mix: 0.3 },
+            NodeKind::Chorus => NodeParams::Chorus { depth_ms: 6.0, rate_hz: 1.2, mix: 0.4 },
             NodeKind::Limiter => NodeParams::Limiter { ceiling_db: -1.0 },
             NodeKind::Gain => NodeParams::Gain { gain_db: 0.0 },
             NodeKind::Makeup => NodeParams::Makeup { gain_db: 0.0 },
@@ -143,6 +162,10 @@ pub enum NodeParams {
     Compressor { threshold_db: f32, ratio: f32 },
     Eq { low_db: f32, mid_db: f32, high_db: f32 },
     Saturator { drive: f32, mix: f32 },
+    Pitch { pitch_semitones: f32, formant_semitones: f32 },
+    Reverb { room_size: f32, damping: f32, mix: f32 },
+    Delay { time_ms: f32, feedback: f32, mix: f32 },
+    Chorus { depth_ms: f32, rate_hz: f32, mix: f32 },
     Limiter { ceiling_db: f32 },
     Gain { gain_db: f32 },
     Makeup { gain_db: f32 },
@@ -165,6 +188,10 @@ impl NodeParams {
             NodeParams::Compressor { .. } => NodeKind::Compressor,
             NodeParams::Eq { .. } => NodeKind::Eq,
             NodeParams::Saturator { .. } => NodeKind::Saturator,
+            NodeParams::Pitch { .. } => NodeKind::Pitch,
+            NodeParams::Reverb { .. } => NodeKind::Reverb,
+            NodeParams::Delay { .. } => NodeKind::Delay,
+            NodeParams::Chorus { .. } => NodeKind::Chorus,
             NodeParams::Limiter { .. } => NodeKind::Limiter,
             NodeParams::Gain { .. } => NodeKind::Gain,
             NodeParams::Makeup { .. } => NodeKind::Makeup,
@@ -180,6 +207,10 @@ pub struct Node {
     pub params: NodeParams,
     pub bypass: bool,
     pub pos: [f32; 2],
+    /// When set, the engine outputs this node's signal alone (for auditioning).
+    /// Exclusive: setting one clears the others.
+    #[serde(default)]
+    pub solo: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,8 +264,20 @@ impl Graph {
     pub fn add_node(&mut self, params: NodeParams, pos: [f32; 2]) -> NodeId {
         let id = self.next_id;
         self.next_id += 1;
-        self.nodes.push(Node { id, params, bypass: false, pos });
+        self.nodes.push(Node { id, params, bypass: false, pos, solo: false });
         id
+    }
+
+    /// Solo a node exclusively (clears any other solo), or clear all solos.
+    pub fn set_solo(&mut self, id: NodeId, on: bool) {
+        for n in &mut self.nodes {
+            n.solo = on && n.id == id;
+        }
+    }
+
+    /// The currently soloed node, if any.
+    pub fn solo_node(&self) -> Option<NodeId> {
+        self.nodes.iter().find(|n| n.solo).map(|n| n.id)
     }
 
     pub fn remove_node(&mut self, id: NodeId) {
@@ -432,6 +475,10 @@ enum NodeProc {
     Compressor(Compressor),
     Eq(Eq),
     Saturator(Saturator),
+    Pitch(Box<PitchShifter>),
+    Reverb(Reverb),
+    Delay(Delay),
+    Chorus(Chorus),
     Limiter(Limiter),
     Gain(f32),
     Makeup(f32),
@@ -467,6 +514,18 @@ impl NodeProc {
                 NodeProc::Eq(Eq::new(SAMPLE_RATE, low_db, mid_db, high_db))
             }
             NodeParams::Saturator { drive, mix } => NodeProc::Saturator(Saturator::new(drive, mix)),
+            NodeParams::Pitch { pitch_semitones, formant_semitones } => {
+                NodeProc::Pitch(Box::new(PitchShifter::new(SAMPLE_RATE, pitch_semitones, formant_semitones)))
+            }
+            NodeParams::Reverb { room_size, damping, mix } => {
+                NodeProc::Reverb(Reverb::new(SAMPLE_RATE, room_size, damping, mix))
+            }
+            NodeParams::Delay { time_ms, feedback, mix } => {
+                NodeProc::Delay(Delay::new(SAMPLE_RATE, time_ms, feedback, mix))
+            }
+            NodeParams::Chorus { depth_ms, rate_hz, mix } => {
+                NodeProc::Chorus(Chorus::new(SAMPLE_RATE, depth_ms, rate_hz, mix))
+            }
             NodeParams::Limiter { ceiling_db } => {
                 NodeProc::Limiter(Limiter::new(SAMPLE_RATE, ceiling_db))
             }
@@ -486,6 +545,10 @@ impl NodeProc {
             NodeProc::Compressor(_) => NodeKind::Compressor,
             NodeProc::Eq(_) => NodeKind::Eq,
             NodeProc::Saturator(_) => NodeKind::Saturator,
+            NodeProc::Pitch(_) => NodeKind::Pitch,
+            NodeProc::Reverb(_) => NodeKind::Reverb,
+            NodeProc::Delay(_) => NodeKind::Delay,
+            NodeProc::Chorus(_) => NodeKind::Chorus,
             NodeProc::Limiter(_) => NodeKind::Limiter,
             NodeProc::Gain(_) => NodeKind::Gain,
             NodeProc::Makeup(_) => NodeKind::Makeup,
@@ -518,6 +581,18 @@ impl NodeProc {
             }
             (NodeProc::Saturator(s), NodeParams::Saturator { drive, mix }) => {
                 s.configure(*drive, *mix);
+            }
+            (NodeProc::Pitch(p), NodeParams::Pitch { pitch_semitones, formant_semitones }) => {
+                p.configure(*pitch_semitones, *formant_semitones);
+            }
+            (NodeProc::Reverb(r), NodeParams::Reverb { room_size, damping, mix }) => {
+                r.configure(*room_size, *damping, *mix);
+            }
+            (NodeProc::Delay(d), NodeParams::Delay { time_ms, feedback, mix }) => {
+                d.configure(*time_ms, *feedback, *mix);
+            }
+            (NodeProc::Chorus(c), NodeParams::Chorus { depth_ms, rate_hz, mix }) => {
+                c.configure(*depth_ms, *rate_hz, *mix);
             }
             (NodeProc::Limiter(l), NodeParams::Limiter { ceiling_db }) => {
                 l.configure(*ceiling_db);
@@ -592,6 +667,26 @@ impl NodeProc {
                     *o = s.process(x);
                 }
             }
+            NodeProc::Pitch(p) => {
+                for (o, &x) in output.iter_mut().zip(input) {
+                    *o = p.process(x);
+                }
+            }
+            NodeProc::Reverb(r) => {
+                for (o, &x) in output.iter_mut().zip(input) {
+                    *o = r.process(x);
+                }
+            }
+            NodeProc::Delay(d) => {
+                for (o, &x) in output.iter_mut().zip(input) {
+                    *o = d.process(x);
+                }
+            }
+            NodeProc::Chorus(c) => {
+                for (o, &x) in output.iter_mut().zip(input) {
+                    *o = c.process(x);
+                }
+            }
             NodeProc::Limiter(l) => {
                 for (o, &x) in output.iter_mut().zip(input) {
                     *o = l.process(x);
@@ -620,6 +715,8 @@ pub struct GraphProcessor {
     upstreams: HashMap<NodeId, Vec<NodeId>>,
     /// The Output node, if any.
     output: Option<NodeId>,
+    /// A soloed node whose signal replaces the output, if any.
+    solo: Option<NodeId>,
     /// Reusable per-node output buffers, so the DAG can fan out and merge.
     node_bufs: HashMap<NodeId, Vec<Sample>>,
     bypass: HashMap<NodeId, bool>,
@@ -639,6 +736,7 @@ impl GraphProcessor {
             order: Vec::new(),
             upstreams: HashMap::new(),
             output: None,
+            solo: None,
             node_bufs: HashMap::new(),
             bypass: HashMap::new(),
             a: Vec::new(),
@@ -694,6 +792,7 @@ impl GraphProcessor {
         self.order = graph.exec_order();
         self.upstreams = graph.upstreams_map();
         self.output = graph.output_id();
+        self.solo = graph.solo_node();
     }
 
     pub fn vad(&self) -> f32 {
@@ -770,6 +869,14 @@ impl GraphProcessor {
         }
         self.procs = procs;
         self.effects = effects;
+
+        // A soloed node's signal replaces the output, for auditioning one node.
+        if let Some(s) = self.solo {
+            if let Some(buf) = self.node_bufs.get(&s) {
+                output.copy_from_slice(&buf[..n]);
+                return;
+            }
+        }
 
         // Final output: the Output node's buffer, or the raw input passed through
         // if the Output is unwired (so disconnecting it never goes silent).
