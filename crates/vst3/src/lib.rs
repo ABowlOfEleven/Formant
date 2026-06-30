@@ -1,9 +1,9 @@
-//! `formant-vst3` — VST3 plugin discovery (and, later, hosting).
+//! `formant-vst3` - VST3 plugin discovery (and, later, hosting).
 //!
 //! Discovery reads the `moduleinfo.json` that VST3 SDK 3.7+ bundles ship in
 //! `Contents/Resources/`. That metadata gives us the plugin name, vendor, class
 //! id, and sub-categories **without loading the DLL or touching Steinberg's COM
-//! interfaces** — so this module is pure, safe Rust with no licensing footprint.
+//! interfaces** - so this module is pure, safe Rust with no licensing footprint.
 //!
 //! Actual audio hosting (loading the module, the COM factory, `IAudioProcessor`)
 //! is a separate, heavier step that lives behind a feature/module once the
@@ -62,7 +62,7 @@ pub struct Plugin {
     pub vendor: String,
     /// The `.vst3` bundle directory.
     pub bundle: PathBuf,
-    /// The actual binary inside the bundle (`Contents/x86_64-win/…`).
+    /// The actual binary inside the bundle (`Contents/x86_64-win/...`).
     pub binary: PathBuf,
     /// Class id of the audio-module class (32 hex chars), for instantiation.
     pub cid_hex: String,
@@ -178,7 +178,7 @@ fn parse_bundle(bundle: &Path) -> Option<Plugin> {
             }
         }
     }
-    // No usable metadata — fall back to loading the module.
+    // No usable metadata - fall back to loading the module.
     let binary = find_binary(bundle)?;
     load_plugin(&binary, bundle)
 }

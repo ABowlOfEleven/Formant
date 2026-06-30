@@ -2,7 +2,7 @@
 
 use crate::types::Sample;
 
-/// A destination for processed audio — a monitor device, the VB-Cable input,
+/// A destination for processed audio - a monitor device, the VB-Cable input,
 /// and (later) a native virtual driver. Kept behind a trait so the set of
 /// outputs is swappable without touching the engine, which is what lets us
 /// move off VB-Cable to a bundled driver down the road.

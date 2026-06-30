@@ -25,7 +25,7 @@ pub fn build() -> Option<Tray> {
     menu.append(&MenuItem::with_id("quit", "Quit", true, None)).ok()?;
 
     let icon = TrayIconBuilder::new()
-        .with_tooltip("Formant — vocal processor")
+        .with_tooltip("Formant - vocal processor")
         .with_menu(Box::new(menu))
         .with_icon(icon)
         .build()

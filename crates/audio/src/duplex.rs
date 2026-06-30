@@ -8,7 +8,7 @@
 //!   sample across the device's channels.
 //!
 //! Capture and render run on independent device clocks; the rings absorb the
-//! jitter. Sample-rate conversion and proper drift handling come later — Phase 1
+//! jitter. Sample-rate conversion and proper drift handling come later - Phase 1
 //! assumes every endpoint is at 48 kHz (the shared mix-format here).
 //!
 //! Threads receive device **id strings** (Send) and re-resolve the device in
@@ -259,7 +259,7 @@ impl WasapiBackend {
         Self {
             capture_id,
             render_ids,
-            // ~100 ms of slack at 48 kHz — plenty to absorb clock jitter.
+            // ~100 ms of slack at 48 kHz - plenty to absorb clock jitter.
             ring_capacity: 4800,
             running: Arc::new(AtomicBool::new(false)),
             threads: Vec::new(),

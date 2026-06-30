@@ -1,7 +1,7 @@
 //! WASAPI client format/period queries.
 //!
 //! Activating an `IAudioClient3` and asking for the shared-mode engine periods
-//! tells us the real low-latency budget on this hardware — the number that
+//! tells us the real low-latency budget on this hardware - the number that
 //! decides whether shared-mode self-monitoring is comfortable (see SPEC.md).
 
 use anyhow::Result;

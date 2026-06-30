@@ -1,4 +1,4 @@
-//! Last-session persistence — remembers the working graph between launches.
+//! Last-session persistence - remembers the working graph between launches.
 
 use std::path::PathBuf;
 

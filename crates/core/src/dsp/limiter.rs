@@ -1,4 +1,4 @@
-//! Peak limiter — a fast brickwall ceiling for safe output levels.
+//! Peak limiter - a fast brickwall ceiling for safe output levels.
 
 use crate::dsp::{db_to_lin, time_to_coef};
 use crate::types::Sample;

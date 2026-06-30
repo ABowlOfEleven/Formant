@@ -1,4 +1,4 @@
-//! Formant — creator-grade, Rust-native vocal processing.
+//! Formant - creator-grade, Rust-native vocal processing.
 //!
 //! Launches the themed UI by default. `--seconds N` runs headless for testing.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -80,7 +80,7 @@ fn run_gui() -> anyhow::Result<()> {
         eprintln!("Formant is already running.");
         return Ok(());
     }
-    // COM for this (UI) thread — STA so it coexists with winit's OleInitialize.
+    // COM for this (UI) thread - STA so it coexists with winit's OleInitialize.
     let com = ComGuard::new_sta()?;
     let config = Config::load_or_default();
     // Seed the bundled example presets on first run.

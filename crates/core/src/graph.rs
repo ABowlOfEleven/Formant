@@ -2,12 +2,14 @@
 //!
 //! The model ([`Graph`], [`Node`], [`Connection`]) is serializable and is what
 //! the UI edits and presets store. The runtime ([`GraphProcessor`]) holds the
-//! stateful DSP for each node and executes the active path mic → … → output.
+//! stateful DSP for each node and executes the graph as a directed acyclic graph
+//! from the `Input` node to the `Output` node.
 //!
-//! Phase-2 v1 keeps it tractable: every node has one audio input and one audio
-//! output, with a single `Input` and `Output` node. The active signal path is
-//! found by walking upstream from `Output`; nodes off that path are inactive.
-//! Multi-input mixing / parallel branches are a later step.
+//! Most nodes take a single input. A `Mix` node accepts many inputs and sums
+//! them, and any node's output can fan out to several destinations, so parallel
+//! branches (parallel compression, blend-in saturation, dry/wet) are possible.
+//! The processor walks the nodes in topological order, giving each its own
+//! output buffer so branches can split and recombine.
 
 use std::collections::HashMap;
 
@@ -122,7 +124,7 @@ impl NodeKind {
 
 /// Per-node parameters. The variant is the node's kind.
 ///
-/// Not `Copy` — `Vst3` carries owned strings (the plugin path + name).
+/// Not `Copy` - `Vst3` carries owned strings (the plugin path + name).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NodeParams {
     Input,
@@ -259,7 +261,7 @@ impl Graph {
     /// so an existing connection into `to` is replaced; a `Mix` node accepts many
     /// inputs and sums them, so connections accumulate (deduped). Self-loops and
     /// feeding the Input node are rejected. A node's output may fan out to many
-    /// destinations (that's how you "split" a signal — no dedicated node needed).
+    /// destinations (that's how you "split" a signal - no dedicated node needed).
     pub fn connect(&mut self, from: NodeId, to: NodeId) {
         if from == to || self.kind_of(to) == Some(NodeKind::Input) {
             return;
@@ -322,7 +324,7 @@ impl Graph {
     /// A topological execution order over *all* nodes (Kahn's algorithm), so a
     /// node is always processed after every node that feeds it. Handles parallel
     /// branches and multi-input `Mix` nodes; any nodes in a cycle are appended
-    /// last (defensive — the editor shouldn't create cycles).
+    /// last (defensive - the editor shouldn't create cycles).
     pub fn exec_order(&self) -> Vec<NodeId> {
         let mut indeg: HashMap<NodeId, usize> =
             self.nodes.iter().map(|n| (n.id, 0usize)).collect();
@@ -440,7 +442,7 @@ impl NodeProc {
     fn new(params: &NodeParams) -> Self {
         match *params {
             // Input/Output are identity; Vst3 is handled by the effects map, not
-            // a NodeProc — Passthrough is just a placeholder for those.
+            // a NodeProc - Passthrough is just a placeholder for those.
             NodeParams::Input | NodeParams::Output | NodeParams::Vst3 { .. } => {
                 NodeProc::Passthrough
             }
@@ -723,7 +725,7 @@ impl GraphProcessor {
             let id = self.order[idx];
             let kind = self.kinds.get(&id).copied().unwrap_or(NodeKind::Output);
 
-            // ── Gather this node's input into `a` ──
+            // -- Gather this node's input into `a` --
             if kind == NodeKind::Input {
                 self.a[..n].copy_from_slice(input);
             } else {
@@ -741,7 +743,7 @@ impl GraphProcessor {
                 }
             }
 
-            // ── Process `a` → `b` ──
+            // -- Process `a` → `b` --
             let bypassed = self.bypass.get(&id).copied().unwrap_or(false);
             if bypassed || kind == NodeKind::Input || kind == NodeKind::Output {
                 self.b[..n].copy_from_slice(&self.a[..n]);
@@ -762,7 +764,7 @@ impl GraphProcessor {
                 self.b[..n].copy_from_slice(&self.a[..n]);
             }
 
-            // ── Store `b` as this node's output ──
+            // -- Store `b` as this node's output --
             self.node_bufs.get_mut(&id).unwrap()[..n].copy_from_slice(&self.b[..n]);
         }
         self.procs = procs;

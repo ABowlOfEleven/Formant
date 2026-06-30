@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
     let baseline = rms(&mut inst);
     println!("\noutput RMS at defaults: {baseline:.4}");
 
-    // Push every parameter to 0.9 and re-measure — proves edits reach the audio.
+    // Push every parameter to 0.9 and re-measure - proves edits reach the audio.
     for p in &params {
         inst.set_param(p.id, 0.9);
     }

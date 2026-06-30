@@ -5,7 +5,7 @@
 //! overflows the ring (the underflows we were seeing). This resampler reads at a
 //! fractional rate nudged by a proportional control loop on the ring fill: if
 //! the ring is filling it consumes a touch faster, if draining a touch slower.
-//! The correction lives in the ppm range in steady state — inaudible.
+//! The correction lives in the ppm range in steady state - inaudible.
 //!
 //! Gross sample-rate conversion (e.g. 44.1k → 48k) is a separate concern; here
 //! `nominal_ratio` is 1.0 because all our endpoints share the 48 kHz mix format.

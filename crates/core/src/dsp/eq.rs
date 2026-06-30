@@ -15,7 +15,7 @@ pub struct Eq {
 }
 
 impl Eq {
-    /// Flat EQ — passes audio through unchanged until bands are dialed in.
+    /// Flat EQ - passes audio through unchanged until bands are dialed in.
     pub fn flat(sample_rate: u32) -> Self {
         Self::new(sample_rate, 0.0, 0.0, 0.0)
     }

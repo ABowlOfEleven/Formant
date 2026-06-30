@@ -346,7 +346,7 @@ impl FormantApp {
                     } else {
                         ("● live", theme::GOOD)
                     };
-                    if ui.button(RichText::new(txt).color(col).strong()).on_hover_text("Turn ALL processing off — passes your raw mic straight through.").clicked() {
+                    if ui.button(RichText::new(txt).color(col).strong()).on_hover_text("Turn ALL processing off - passes your raw mic straight through.").clicked() {
                         self.engine.controls.toggle_bypass();
                     }
                 });
@@ -368,14 +368,14 @@ impl FormantApp {
             (m.in_peak(), m.out_peak(), m.vad(), m.gain_reduction_db())
         };
 
-        // ── Meters + transport ───────────────────────────────────────────
+        // -- Meters + transport -------------------------------------------
         theme::card(ui.style()).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("MIXER").color(theme::CYAN));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let bypassed = self.engine.controls.global_bypass();
                     let (txt, col) = if bypassed { ("● BYPASSED", theme::EMBER) } else { ("● live", theme::GOOD) };
-                    if ui.button(RichText::new(txt).color(col).strong()).on_hover_text("Turn ALL processing off — passes your raw mic straight through.").clicked() {
+                    if ui.button(RichText::new(txt).color(col).strong()).on_hover_text("Turn ALL processing off - passes your raw mic straight through.").clicked() {
                         self.engine.controls.toggle_bypass();
                     }
                 });
@@ -398,7 +398,7 @@ impl FormantApp {
             });
         });
 
-        // ── Preset quick-switch ──────────────────────────────────────────
+        // -- Preset quick-switch ------------------------------------------
         ui.add_space(8.0);
         theme::card(ui.style()).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -415,7 +415,7 @@ impl FormantApp {
                 }
             });
             if self.presets.is_empty() {
-                ui.label(RichText::new("no presets — save one, or import in Setup").color(theme::MUTED).small());
+                ui.label(RichText::new("no presets - save one, or import in Setup").color(theme::MUTED).small());
             }
             let presets = self.presets.clone();
             ui.horizontal_wrapped(|ui| {
@@ -429,7 +429,7 @@ impl FormantApp {
             });
         });
 
-        // ── Channel strip (one channel per chain node, in signal order) ──
+        // -- Channel strip (one channel per chain node, in signal order) --
         ui.add_space(8.0);
         theme::card(ui.style()).show(ui, |ui| {
             ui.label(RichText::new("CHANNEL STRIP").color(theme::CYAN).strong());
@@ -440,7 +440,7 @@ impl FormantApp {
                 .filter(|id| !matches!(self.graph.kind_of(*id), Some(NodeKind::Input) | Some(NodeKind::Output)))
                 .collect();
             if ids.is_empty() {
-                ui.label(RichText::new("empty chain — add nodes in the Nodes tab").color(theme::MUTED).small());
+                ui.label(RichText::new("empty chain - add nodes in the Nodes tab").color(theme::MUTED).small());
             }
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 ui.horizontal_top(|ui| {
@@ -747,7 +747,7 @@ impl FormantApp {
             match &mut params {
                 NodeParams::HighPass { cutoff_hz } => {
                     ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("cutoff Hz"))
-                        .on_hover_text("Frequencies below this are removed. ~80–120 Hz clears rumble without thinning your voice.");
+                        .on_hover_text("Frequencies below this are removed. ~80-120 Hz clears rumble without thinning your voice.");
                 }
                 NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate } => {
                     ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("threshold dB"))
@@ -759,7 +759,7 @@ impl FormantApp {
                     ui.add(egui::Slider::new(hold_ms, 0.0..=500.0).text("hold ms"))
                         .on_hover_text("How long it stays open after you stop, so word endings aren't cut off.");
                     ui.add(egui::Slider::new(release_ms, 5.0..=1000.0).logarithmic(true).text("release ms"))
-                        .on_hover_text("How slowly the gate closes after the hold — longer is more natural.");
+                        .on_hover_text("How slowly the gate closes after the hold - longer is more natural.");
                     ui.checkbox(vad_gate, "follow VAD (RNNoise)")
                         .on_hover_text("Open the gate from AI voice detection instead of raw loudness.");
                 }
@@ -769,7 +769,7 @@ impl FormantApp {
                     ui.add(egui::Slider::new(ratio, 1.0..=12.0).text("ratio"))
                         .on_hover_text("How hard the 'ess' is reduced once over threshold.");
                     ui.add(egui::Slider::new(split_hz, 3000.0..=12000.0).text("split Hz"))
-                        .on_hover_text("The frequency where 'ess'/'sh' sounds live (try 5–8 kHz). Only this band is touched.");
+                        .on_hover_text("The frequency where 'ess'/'sh' sounds live (try 5-8 kHz). Only this band is touched.");
                 }
                 NodeParams::Compressor { threshold_db, ratio } => {
                     ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("threshold dB"))
@@ -779,25 +779,25 @@ impl FormantApp {
                 }
                 NodeParams::Eq { low_db, mid_db, high_db } => {
                     ui.add(egui::Slider::new(low_db, -12.0..=12.0).text("low dB"))
-                        .on_hover_text("Boost (+) or cut (–) the low end / warmth (~120 Hz).");
+                        .on_hover_text("Boost (+) or cut (-) the low end / warmth (~120 Hz).");
                     ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid dB"))
-                        .on_hover_text("Boost (+) or cut (–) the mids / presence (~3 kHz).");
+                        .on_hover_text("Boost (+) or cut (-) the mids / presence (~3 kHz).");
                     ui.add(egui::Slider::new(high_db, -12.0..=12.0).text("high dB"))
-                        .on_hover_text("Boost (+) or cut (–) the highs / air (~10 kHz).");
+                        .on_hover_text("Boost (+) or cut (-) the highs / air (~10 kHz).");
                 }
                 NodeParams::Saturator { drive, mix } => {
                     ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive"))
-                        .on_hover_text("How hard the signal is pushed — more = warmer, then grittier.");
+                        .on_hover_text("How hard the signal is pushed - more = warmer, then grittier.");
                     ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
                         .on_hover_text("Blend between clean (0) and saturated (1).");
                 }
                 NodeParams::Limiter { ceiling_db } => {
                     ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceiling dB"))
-                        .on_hover_text("Maximum output level — nothing gets louder than this.");
+                        .on_hover_text("Maximum output level - nothing gets louder than this.");
                 }
                 NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } => {
                     ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("gain dB"))
-                        .on_hover_text("Volume adjustment in decibels (+ louder, – quieter).");
+                        .on_hover_text("Volume adjustment in decibels (+ louder, - quieter).");
                 }
                 NodeParams::Mix { gain_db } => {
                     ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("output dB"))
@@ -849,7 +849,7 @@ impl FormantApp {
                             ui.label(RichText::new("no editable parameters").color(theme::MUTED).small());
                         }
                         None => {
-                            ui.label(RichText::new("loading…").color(theme::MUTED).small());
+                            ui.label(RichText::new("loading...").color(theme::MUTED).small());
                         }
                     }
                 }
@@ -881,19 +881,19 @@ impl FormantApp {
 
     fn tab_setup(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
-            // ── Presets ──────────────────────────────────────────────────
+            // -- Presets --------------------------------------------------
             theme::card(ui.style()).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("PRESETS").color(theme::CYAN).strong());
                     if ui.button("Refresh").clicked() {
                         self.presets = Preset::load_all();
                     }
-                    if ui.button("Import…").on_hover_text("Load a .ron preset file from anywhere into your library.").clicked() {
+                    if ui.button("Import...").on_hover_text("Load a .ron preset file from anywhere into your library.").clicked() {
                         self.import_preset();
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.new_preset_name).hint_text("save current as…"));
+                    ui.add(egui::TextEdit::singleline(&mut self.new_preset_name).hint_text("save current as..."));
                     if ui.button("Save").clicked() && !self.new_preset_name.trim().is_empty() {
                         let preset = Preset::new(self.new_preset_name.trim(), self.graph.clone());
                         self.status = match preset.save() {
@@ -917,7 +917,7 @@ impl FormantApp {
                                 let _ = preset.delete();
                                 to_delete = Some(i);
                             }
-                            if ui.button("Export…").on_hover_text("Save this preset to a .ron file to share or back up.").clicked() {
+                            if ui.button("Export...").on_hover_text("Save this preset to a .ron file to share or back up.").clicked() {
                                 to_export = Some(i);
                             }
                             if ui.button("Load").clicked() {
@@ -1000,9 +1000,9 @@ impl FormantApp {
                     ui.horizontal(|ui| {
                         ui.add_sized([150.0, 18.0], egui::Label::new(action.label()));
                         if self.rebinding == Some(action) {
-                            ui.colored_label(theme::EMBER, "press a key…  (Esc cancels)");
+                            ui.colored_label(theme::EMBER, "press a key...  (Esc cancels)");
                         } else {
-                            let name = self.engine.bindings.get(action).map(hotkeys::key_name).unwrap_or_else(|| "—".into());
+                            let name = self.engine.bindings.get(action).map(hotkeys::key_name).unwrap_or_else(|| "-".into());
                             ui.monospace(name);
                         }
                         if ui.button("Rebind").clicked() {
@@ -1127,18 +1127,18 @@ fn paint_backdrop(ui: &egui::Ui) {
 /// Returns true if it changed.
 fn primary_slider(ui: &mut egui::Ui, params: &mut NodeParams) -> bool {
     let resp = match params {
-        NodeParams::HighPass { cutoff_hz } => Some(ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("Hz")).on_hover_text("Cutoff — frequencies below this are removed.")),
-        NodeParams::Gate { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("thr")).on_hover_text("Gate threshold — how loud you must be to open the mic.")),
-        NodeParams::DeEsser { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr")).on_hover_text("De-ess threshold — lower tames more sibilance.")),
-        NodeParams::Compressor { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr")).on_hover_text("Compressor threshold — lower evens out more of your voice.")),
+        NodeParams::HighPass { cutoff_hz } => Some(ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("Hz")).on_hover_text("Cutoff - frequencies below this are removed.")),
+        NodeParams::Gate { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("thr")).on_hover_text("Gate threshold - how loud you must be to open the mic.")),
+        NodeParams::DeEsser { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr")).on_hover_text("De-ess threshold - lower tames more sibilance.")),
+        NodeParams::Compressor { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr")).on_hover_text("Compressor threshold - lower evens out more of your voice.")),
         NodeParams::Eq { mid_db, .. } => Some(ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid")).on_hover_text("Mid boost/cut (presence).")),
-        NodeParams::Saturator { drive, .. } => Some(ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive")).on_hover_text("Saturation drive — more = warmer/grittier.")),
-        NodeParams::Limiter { ceiling_db } => Some(ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceil")).on_hover_text("Output ceiling — nothing gets louder than this.")),
+        NodeParams::Saturator { drive, .. } => Some(ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive")).on_hover_text("Saturation drive - more = warmer/grittier.")),
+        NodeParams::Limiter { ceiling_db } => Some(ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceil")).on_hover_text("Output ceiling - nothing gets louder than this.")),
         NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } | NodeParams::Mix { gain_db } => {
             Some(ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("dB")).on_hover_text("Volume in decibels."))
         }
         _ => {
-            ui.label(RichText::new("—").color(theme::MUTED).small());
+            ui.label(RichText::new("-").color(theme::MUTED).small());
             None
         }
     };
@@ -1148,18 +1148,18 @@ fn primary_slider(ui: &mut egui::Ui, params: &mut NodeParams) -> bool {
 /// Plain-language explanation of what each node does (hover tooltip).
 fn kind_help(kind: NodeKind) -> &'static str {
     match kind {
-        NodeKind::Input => "Your microphone — the start of the chain.",
+        NodeKind::Input => "Your microphone - the start of the chain.",
         NodeKind::Output => "The processed signal sent to your monitor and the virtual mic apps use.",
         NodeKind::HighPass => "Removes low-frequency rumble (handling noise, thumps, AC hum) below the cutoff. Almost always worth having first.",
-        NodeKind::Denoise => "AI noise reduction (RNNoise): removes steady background noise — fans, hiss, room tone — while keeping your voice.",
+        NodeKind::Denoise => "AI noise reduction (RNNoise): removes steady background noise - fans, hiss, room tone - while keeping your voice.",
         NodeKind::Gate => "Silences the mic when you're not talking, so background noise doesn't leak through between words.",
         NodeKind::DeEsser => "Tames harsh 'sss' and 'shh' sounds (sibilance) without dulling the rest of your voice.",
-        NodeKind::Compressor => "Evens out your volume — brings quiet parts up and loud parts down — for a steadier, fuller, more 'pro' sound.",
+        NodeKind::Compressor => "Evens out your volume - brings quiet parts up and loud parts down - for a steadier, fuller, more 'pro' sound.",
         NodeKind::Eq => "Tone control: boost or cut lows, mids, and highs to shape your voice.",
-        NodeKind::Saturator => "Adds warmth and subtle harmonics like analog gear — gentle at low drive, gritty at high.",
+        NodeKind::Saturator => "Adds warmth and subtle harmonics like analog gear - gentle at low drive, gritty at high.",
         NodeKind::Limiter => "A safety ceiling: stops the output from ever getting too loud or clipping. Good as the last node.",
-        NodeKind::Gain => "Simple volume trim — boost or cut the level at this point in the chain.",
-        NodeKind::Makeup => "Final output volume — bring the processed signal back up to the level you want.",
+        NodeKind::Gain => "Simple volume trim - boost or cut the level at this point in the chain.",
+        NodeKind::Makeup => "Final output volume - bring the processed signal back up to the level you want.",
         NodeKind::Mix => "Combines multiple wires into one by summing them. Wire several branches in for parallel chains: parallel compression, blend-in saturation, or dry/wet (control each branch's level with a Gain before it).",
         NodeKind::Vst3 => "A third-party VST3 plugin added to your chain. Open its editor for its own controls.",
     }
@@ -1171,7 +1171,7 @@ fn mode_help(mode: MuteMode) -> &'static str {
         MuteMode::Vad => "Open the mic automatically when you talk, using AI voice detection. Hands-free.",
         MuteMode::PushToTalk => "Mic is open only while you hold the push-to-talk key (set it in Setup → Hotkeys).",
         MuteMode::Toggle => "Press the toggle key to mute/unmute (set it in Setup → Hotkeys).",
-        MuteMode::AlwaysOpen => "Mic is always open — no gating at all.",
+        MuteMode::AlwaysOpen => "Mic is always open - no gating at all.",
     }
 }
 
@@ -1194,7 +1194,7 @@ fn upsert_param(stored: &mut Vec<(u32, f64)>, id: u32, value: f64) {
     }
 }
 
-/// Display label for a node — the plugin name for VST nodes, else the kind.
+/// Display label for a node - the plugin name for VST nodes, else the kind.
 fn node_label(params: &NodeParams) -> String {
     match params {
         NodeParams::Vst3 { name, .. } => name.clone(),

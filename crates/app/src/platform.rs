@@ -53,7 +53,7 @@ pub fn autostart_enabled() -> bool {
     }
 }
 
-/// Add/remove the login-autostart entry (HKCU\…\Run) pointing at this exe.
+/// Add/remove the login-autostart entry (HKCU\...\Run) pointing at this exe.
 pub fn set_autostart(enabled: bool) -> std::io::Result<()> {
     #[cfg(windows)]
     {

@@ -1,7 +1,7 @@
 //! Host a single VST3 effect, split across threads:
-//! - [`PluginInstance`] (this file) — the **processor** half, moved to the audio
+//! - [`PluginInstance`] (this file) - the **processor** half, moved to the audio
 //!   thread; `process()` and queued parameter automation.
-//! - [`crate::editor::PluginEditor`] — the **controller/editor** half, kept on the
+//! - [`crate::editor::PluginEditor`] - the **controller/editor** half, kept on the
 //!   UI thread; parameters and the plugin's own GUI window.
 //!
 //! Both share the loaded [`Module`] via `Arc`. Mono bridge: present the plugin a
@@ -44,7 +44,7 @@ const K_OUTPUT: i32 = 1;
 const T_TRUE: u8 = 1;
 const T_FALSE: u8 = 0;
 
-/// The processor half — runs on the audio thread.
+/// The processor half - runs on the audio thread.
 pub struct PluginInstance {
     _module: Arc<Module>,
     _host_context: Option<ComPtr<FUnknown>>,

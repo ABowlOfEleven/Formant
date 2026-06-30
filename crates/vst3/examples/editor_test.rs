@@ -19,10 +19,10 @@ fn main() -> anyhow::Result<()> {
         let plain = editor.param_string(p.id, p.default);
         println!("  {} = {} (default {:.2})", p.name, plain, p.default);
     }
-    println!("opening editor window…");
+    println!("opening editor window...");
 
     editor.open()?;
-    println!("editor open — pumping messages for 2s");
+    println!("editor open - pumping messages for 2s");
     let start = std::time::Instant::now();
     while start.elapsed().as_secs() < 2 {
         formant_vst3::pump();
@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     editor.close();
-    println!("closed OK — no crash");
+    println!("closed OK - no crash");
     Ok(())
 }
 

@@ -42,7 +42,7 @@ Wave ([System.Drawing.Color]::FromArgb(255, 34, 211, 238)) 14 48 0.0 122
 
 $g.Dispose()
 
-# Export raw RGBA (for the egui window/title-bar icon — no image-crate decode).
+# Export raw RGBA (for the egui window/title-bar icon - no image-crate decode).
 $rgbaOut = Join-Path (Split-Path $Out) 'icon.rgba'
 $rect = New-Object System.Drawing.Rectangle(0, 0, $size, $size)
 $data = $bmp.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)

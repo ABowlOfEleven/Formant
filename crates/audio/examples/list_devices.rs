@@ -1,4 +1,4 @@
-//! Enumerate WASAPI endpoints — the first runnable slice of M1.
+//! Enumerate WASAPI endpoints - the first runnable slice of M1.
 //!
 //! Run with: `cargo run -p formant-audio --example list_devices`
 
@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
         if let Ok(device) = devices::default_device(&e, direction) {
             match client::query_format(&device) {
                 Ok(f) => println!(
-                    "  default {:?}: {} Hz / {} ch / {}-bit — min {:.2} ms, default {:.2} ms",
+                    "  default {:?}: {} Hz / {} ch / {}-bit - min {:.2} ms, default {:.2} ms",
                     direction,
                     f.sample_rate,
                     f.channels,

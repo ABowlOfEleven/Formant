@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub struct DeviceConfig {
     /// Microphone to capture (substring match).
     pub mic: String,
-    /// Render outputs to fan the processed signal to (substring matches) —
+    /// Render outputs to fan the processed signal to (substring matches) -
     /// typically a monitor plus the virtual cable that apps read as their mic.
     pub outputs: Vec<String>,
 }

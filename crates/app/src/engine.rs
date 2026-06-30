@@ -74,7 +74,7 @@ impl Engine {
                 }
             }
 
-            // Apply edited graph when flagged — never block the audio thread.
+            // Apply edited graph when flagged - never block the audio thread.
             if cb_dirty.swap(false, Ordering::Acquire) {
                 match cb_graph.try_lock() {
                     Ok(g) => processor.apply_graph(&g),

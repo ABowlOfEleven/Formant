@@ -1,4 +1,4 @@
-//! A minimal `IHostApplication` — the host context plugins receive in
+//! A minimal `IHostApplication` - the host context plugins receive in
 //! `initialize`. Separated edit controllers need a valid one to set up their
 //! parameters, so we provide a name and a stub `createInstance`.
 

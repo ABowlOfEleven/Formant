@@ -1,4 +1,4 @@
-//! Cyan + ember HUD theme — a sibling to NeonPrime's palette.
+//! Cyan + ember HUD theme - a sibling to NeonPrime's palette.
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Margin, Stroke, TextStyle, Vec2,
@@ -23,7 +23,7 @@ pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
 pub fn apply(ctx: &egui::Context) {
     let mut style = (*ctx.global_style()).clone();
 
-    // Spacing — more breathing room.
+    // Spacing - more breathing room.
     let s = &mut style.spacing;
     s.item_spacing = Vec2::new(9.0, 9.0);
     s.button_padding = Vec2::new(12.0, 7.0);

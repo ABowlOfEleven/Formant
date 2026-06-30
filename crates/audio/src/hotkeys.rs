@@ -2,7 +2,7 @@
 //!
 //! Polling reads global key state regardless of focus and needs no window or
 //! message loop, so it works headless and supports hold-detection for
-//! push-to-talk (which `RegisterHotKey` can't do — it only fires on press).
+//! push-to-talk (which `RegisterHotKey` can't do - it only fires on press).
 //!
 //! Bindings live in [`SharedBindings`] (lock-free atomics) so the UI can rebind
 //! or clear keys live while the listener runs.

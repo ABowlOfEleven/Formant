@@ -1,7 +1,7 @@
 //! WASAPI endpoint enumeration and lookup.
 //!
 //! This is the part of the audio layer we can validate without playing or
-//! capturing any audio — enough to confirm the COM plumbing works and to locate
+//! capturing any audio - enough to confirm the COM plumbing works and to locate
 //! the mic, the monitor, and the virtual-cable sink by name.
 
 use anyhow::{Context, Result};

@@ -14,7 +14,7 @@ const SCALE: f32 = 32768.0;
 
 /// CPU noise suppression. RNNoise only consumes fixed 480-sample frames, so this
 /// buffers the incoming stream into frames, runs the model, and emits samples
-/// with exactly one frame (~10 ms) of latency — primed with silence so the
+/// with exactly one frame (~10 ms) of latency - primed with silence so the
 /// output length always matches the input with no underflow.
 ///
 /// Bonus: each frame yields a voice-activity probability, which the gate can use

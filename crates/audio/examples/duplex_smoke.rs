@@ -2,7 +2,7 @@
 //!
 //! Emits **silence** (the callback zeros its output) so nothing is echoed, while
 //! still exercising capture, the DSP callback, the rings, and dual render. It
-//! reports how many frames actually moved — proof the plumbing runs on hardware.
+//! reports how many frames actually moved - proof the plumbing runs on hardware.
 //!
 //! Run with: `cargo run -p formant-audio --example duplex_smoke`
 
@@ -27,7 +27,7 @@ fn main() -> anyhow::Result<()> {
     let mut backend = WasapiBackend::new(devices::device_id(&capture)?, vec![devices::device_id(&render)?]);
     let stats = backend.stats();
 
-    // Silence callback — emits nothing. Swap for `output.copy_from_slice(input)`
+    // Silence callback - emits nothing. Swap for `output.copy_from_slice(input)`
     // to hear a raw passthrough once you're at the machine.
     backend.start(Box::new(|_input: &[f32], output: &mut [f32]| {
         output.fill(0.0);

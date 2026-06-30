@@ -76,7 +76,7 @@ impl IParameterChangesTrait for ParamChanges {
 }
 
 /// Build an `IParameterChanges` for the pending edits (None if empty). The
-/// returned pointer is owned by the `ComPtr` — keep it alive across `process()`.
+/// returned pointer is owned by the `ComPtr` - keep it alive across `process()`.
 pub fn build(pending: &[(ParamID, ParamValue)]) -> Option<ComPtr<IParameterChanges>> {
     if pending.is_empty() {
         return None;

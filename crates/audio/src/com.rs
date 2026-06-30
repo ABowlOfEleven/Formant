@@ -11,12 +11,12 @@ use windows::Win32::System::Com::{
 pub struct ComGuard;
 
 impl ComGuard {
-    /// Multithreaded apartment — for the audio worker threads.
+    /// Multithreaded apartment - for the audio worker threads.
     pub fn new() -> Result<Self> {
         Self::init(COINIT_MULTITHREADED)
     }
 
-    /// Single-threaded apartment — required on the UI thread, because winit's
+    /// Single-threaded apartment - required on the UI thread, because winit's
     /// `OleInitialize` (drag-and-drop) needs STA and an MTA init there panics
     /// with `RPC_E_CHANGED_MODE`.
     pub fn new_sta() -> Result<Self> {

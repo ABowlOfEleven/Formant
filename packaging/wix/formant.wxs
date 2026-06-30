@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WiX v5 authoring for the Formant MSI. Built by packaging/build-msi.ps1,
+     which passes RepoDir and Version as preprocessor variables. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Formant"
+      Manufacturer="Ethan Belanger"
+      Version="$(var.Version)"
+      UpgradeCode="D566B42A-9FAF-43F6-B05A-BAA8FB1F9E24"
+      Scope="perMachine"
+      Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Formant is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="FormantIcon" SourceFile="$(var.RepoDir)\crates\app\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="FormantIcon" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/ABowlOfEleven/Formant" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/ABowlOfEleven/Formant" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Formant">
+        <Component Id="MainExecutable">
+          <File Id="FormantExe" Source="$(var.RepoDir)\target\release\formant.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="IconAsset">
+          <File Id="IconIco" Source="$(var.RepoDir)\crates\app\icon.ico" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="FormantStartMenu"
+                  Name="Formant"
+                  Description="Rust-native vocal processor"
+                  Target="[INSTALLFOLDER]formant.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="FormantIcon" />
+        <RegistryValue Root="HKLM" Key="Software\Formant" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Formant" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="IconAsset" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

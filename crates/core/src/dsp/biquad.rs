@@ -92,7 +92,7 @@ impl Biquad {
         Self::from_coeffs(b0, b1, b2, a0, a1, a2)
     }
 
-    /// Process one sample. No branches, no allocation — RT-thread safe.
+    /// Process one sample. No branches, no allocation - RT-thread safe.
     #[inline]
     pub fn process(&mut self, x: Sample) -> Sample {
         let y = self.b0 * x + self.z1;

@@ -1,4 +1,4 @@
-//! `formant-core` — backend-agnostic DSP, signal-chain engine, routing, and presets.
+//! `formant-core` - backend-agnostic DSP, signal-chain engine, routing, and presets.
 //!
 //! Everything here is pure and testable without an audio device, so the whole
 //! signal chain can be validated against synthetic buffers (e.g. over remote
