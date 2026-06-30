@@ -50,6 +50,10 @@ pub struct Stats {
     pub captured_frames: AtomicU64,
     pub rendered_frames: AtomicU64,
     pub underflows: AtomicU64,
+    /// Set when a capture/render thread exits with an error (a device was
+    /// unplugged, disabled, or otherwise invalidated). The app watches this to
+    /// recover by restarting the engine.
+    pub device_lost: AtomicBool,
 }
 
 /// A live shared-mode WASAPI stream and the facts we need to drive it.
@@ -297,8 +301,10 @@ impl AudioBackend for WasapiBackend {
             let id = self.capture_id.clone();
             let running = Arc::clone(&self.running);
             let stats = Arc::clone(&self.stats);
+            let err_stats = Arc::clone(&self.stats);
             self.threads.push(thread::spawn(move || {
                 if let Err(e) = run_capture(id, callback, producers, running, stats) {
+                    err_stats.device_lost.store(true, Ordering::Release);
                     eprintln!("[formant-audio] capture thread error: {e:?}");
                 }
             }));
@@ -310,8 +316,10 @@ impl AudioBackend for WasapiBackend {
         for (id, consumer) in self.render_ids.iter().cloned().zip(consumers) {
             let running = Arc::clone(&self.running);
             let stats = Arc::clone(&self.stats);
+            let err_stats = Arc::clone(&self.stats);
             self.threads.push(thread::spawn(move || {
                 if let Err(e) = run_render(id, consumer, target_fill, running, stats) {
+                    err_stats.device_lost.store(true, Ordering::Release);
                     eprintln!("[formant-audio] render thread error: {e:?}");
                 }
             }));

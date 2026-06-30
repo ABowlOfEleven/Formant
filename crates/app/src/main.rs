@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod engine;
+mod logging;
 mod platform;
 mod theme;
 mod tray;
@@ -80,9 +81,18 @@ fn run_gui() -> anyhow::Result<()> {
         eprintln!("Formant is already running.");
         return Ok(());
     }
+    logging::init();
     // COM for this (UI) thread - STA so it coexists with winit's OleInitialize.
     let com = ComGuard::new_sta()?;
-    let config = Config::load_or_default();
+    // If a config already exists, this is an upgrade, not a first run, so skip
+    // the one-time welcome and tray hint.
+    let config_existed = Config::default_path().is_some_and(|p| p.exists());
+    let mut config = Config::load_or_default();
+    if config_existed && !config.seen_welcome {
+        config.seen_welcome = true;
+        config.seen_tray_hint = true;
+        let _ = config.save();
+    }
     // Seed the bundled example presets on first run.
     formant_core::Preset::install_factory();
     // Restore the last session's graph, or start from the default chain.

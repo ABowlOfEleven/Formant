@@ -10,6 +10,7 @@ pub mod control;
 pub mod dsp;
 pub mod engine;
 pub mod graph;
+pub mod persist;
 pub mod presets;
 pub mod resample;
 pub mod router;

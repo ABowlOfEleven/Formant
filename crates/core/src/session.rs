@@ -12,11 +12,8 @@ fn session_path() -> Option<PathBuf> {
 /// Persist the current graph as the session to restore next launch.
 pub fn save(graph: &Graph) -> anyhow::Result<()> {
     let path = session_path().ok_or_else(|| anyhow::anyhow!("APPDATA not set"))?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let text = ron::ser::to_string_pretty(graph, ron::ser::PrettyConfig::default())?;
-    std::fs::write(path, text)?;
+    crate::persist::write_backup(&path, &text)?;
     Ok(())
 }
 

@@ -189,6 +189,7 @@ pub struct Connection {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)] // tolerate fields added in newer versions
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub connections: Vec<Connection>,
@@ -902,6 +903,14 @@ mod tests {
         let mut out = vec![0.0; 480];
         proc.process(&input, &mut out);
         assert!(out.iter().all(|x| x.is_finite()), "no NaN/inf from the parallel chain");
+    }
+
+    #[test]
+    fn loads_tolerantly_when_a_field_is_absent() {
+        // Simulates an older file that predates a field (here, `next_id`): the
+        // `#[serde(default)]` on Graph fills it instead of failing the load.
+        let g: Graph = ron::from_str("(nodes: [], connections: [])").expect("should load");
+        assert!(g.nodes.is_empty());
     }
 
     #[test]

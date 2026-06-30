@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::graph::Graph;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)] // tolerate fields added in newer versions
 pub struct Preset {
     pub name: String,
     pub graph: Graph,
@@ -47,12 +48,11 @@ impl Preset {
             .map(|appdata| PathBuf::from(appdata).join("Formant").join("presets"))
     }
 
-    /// Save as `<dir>/<name>.ron`, creating the directory if needed.
+    /// Save as `<dir>/<name>.ron`, keeping a backup of any previous file.
     pub fn save(&self) -> anyhow::Result<PathBuf> {
         let dir = Self::dir().ok_or_else(|| anyhow::anyhow!("APPDATA is not set"))?;
-        std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{}.ron", sanitize(&self.name)));
-        std::fs::write(&path, self.to_ron()?)?;
+        crate::persist::write_backup(&path, &self.to_ron()?)?;
         Ok(path)
     }
 

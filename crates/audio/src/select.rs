@@ -25,16 +25,19 @@ fn resolve_one(direction: Direction, query: &str) -> Result<Resolved> {
     Ok(Resolved { id: found.id, name: found.name })
 }
 
-/// Resolve every entry in `cfg`, failing if any device can't be found.
+/// Resolve `cfg` into concrete endpoints. The mic is required, but missing
+/// outputs are skipped rather than fatal, so losing one output device (say the
+/// headphones are unplugged) does not take down the whole engine as long as at
+/// least one output, typically the virtual cable, is still present.
 pub fn resolve(cfg: &DeviceConfig) -> Result<Routing> {
     let mic = resolve_one(Direction::Capture, &cfg.mic)?;
-    let outputs = cfg
+    let outputs: Vec<Resolved> = cfg
         .outputs
         .iter()
-        .map(|q| resolve_one(Direction::Render, q))
-        .collect::<Result<Vec<_>>>()?;
+        .filter_map(|q| resolve_one(Direction::Render, q).ok())
+        .collect();
     if outputs.is_empty() {
-        anyhow::bail!("config lists no render outputs");
+        anyhow::bail!("none of the configured render outputs are available");
     }
     Ok(Routing { mic, outputs })
 }

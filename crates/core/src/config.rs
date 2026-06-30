@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 /// endpoints at startup by `formant-audio`, so the config survives the exact
 /// Windows endpoint names changing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)] // tolerate fields added in newer versions
 pub struct DeviceConfig {
     /// Microphone to capture (substring match).
     pub mic: String,
@@ -49,10 +50,13 @@ impl Default for Bindings {
 
 /// Top-level Formant configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)] // tolerate fields added in newer versions
 pub struct Config {
     pub devices: DeviceConfig,
-    #[serde(default)]
     pub bindings: Bindings,
+    /// One-time UI hints already shown to the user (e.g. the welcome panel).
+    pub seen_welcome: bool,
+    pub seen_tray_hint: bool,
 }
 
 impl Config {
@@ -71,15 +75,12 @@ impl Config {
             .unwrap_or_default()
     }
 
-    /// Persist to the default path, creating the directory if needed.
+    /// Persist to the default path, keeping a backup of the previous file.
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::default_path()
             .ok_or_else(|| anyhow::anyhow!("APPDATA is not set"))?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
         let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())?;
-        std::fs::write(path, text)?;
+        crate::persist::write_backup(&path, &text)?;
         Ok(())
     }
 }

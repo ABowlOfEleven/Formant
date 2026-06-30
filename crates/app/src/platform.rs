@@ -31,6 +31,25 @@ pub fn is_first_instance() -> bool {
     }
 }
 
+/// Show a simple informational message box.
+pub fn notify(title: &str, message: &str) {
+    #[cfg(windows)]
+    {
+        use windows::core::{HSTRING, PCWSTR};
+        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
+        let text = HSTRING::from(message);
+        let caption = HSTRING::from(title);
+        // SAFETY: valid wide strings; no owner window needed for a modal box.
+        unsafe {
+            MessageBoxW(None, PCWSTR(text.as_ptr()), PCWSTR(caption.as_ptr()), MB_OK | MB_ICONINFORMATION);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (title, message);
+    }
+}
+
 /// Open a URL (or path) in the user's default handler, e.g. the web browser.
 pub fn open_url(url: &str) {
     #[cfg(windows)]

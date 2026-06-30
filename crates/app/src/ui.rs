@@ -55,6 +55,8 @@ pub struct FormantApp {
     last_session_save: std::time::Instant,
     // Tracks tab transitions so we can re-scan devices on entering Setup.
     last_tab: Option<Tab>,
+    // Throttles audio device-loss recovery attempts.
+    last_recovery: Option<std::time::Instant>,
 }
 
 /// A VST node parameter as shown in the inspector (normalized value).
@@ -92,6 +94,7 @@ impl FormantApp {
             session_dirty: false,
             last_session_save: std::time::Instant::now(),
             last_tab: None,
+            last_recovery: None,
         };
         // Scan devices up front so the virtual-cable check is ready on first frame.
         app.refresh_devices();
@@ -304,6 +307,55 @@ impl FormantApp {
         }
     }
 
+    /// First-run welcome overlay: explain the routing model and point at Setup.
+    fn welcome_overlay(&mut self, ctx: &egui::Context) {
+        if self.config.seen_welcome {
+            return;
+        }
+        let mut dismiss = false;
+        let mut go_setup = false;
+        egui::Window::new("Welcome to Formant")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_max_width(440.0);
+                ui.label("Formant cleans up and shapes your microphone in real time, then sends it to two places at once:");
+                ui.add_space(4.0);
+                ui.label(RichText::new("- your headphones, so you can hear yourself").small());
+                ui.label(RichText::new("- a virtual cable that other apps read as a microphone").small());
+                ui.add_space(8.0);
+                ui.label("To use it in Discord, OBS, or a game:");
+                ui.label(RichText::new("1. In Setup, pick your mic, your headphones, and your virtual cable.").small());
+                ui.label(RichText::new("2. In the other app, set the microphone to that same cable.").small());
+                ui.add_space(8.0);
+                if formant_audio::devices::detect_cable(&self.render_devices).is_none() {
+                    ui.label(
+                        RichText::new("No virtual cable is installed yet. Setup has a one-click link to get one (VB-CABLE is free).")
+                            .color(theme::EMBER)
+                            .small(),
+                    );
+                    ui.add_space(8.0);
+                }
+                ui.horizontal(|ui| {
+                    if ui.button(RichText::new("Open Setup").color(theme::CYAN)).clicked() {
+                        go_setup = true;
+                        dismiss = true;
+                    }
+                    if ui.button("Got it").clicked() {
+                        dismiss = true;
+                    }
+                });
+            });
+        if go_setup {
+            self.tab = Tab::Setup;
+        }
+        if dismiss {
+            self.config.seen_welcome = true;
+            let _ = self.config.save();
+        }
+    }
+
     /// Export a preset to a user-chosen `.ron` file (to share/back up).
     fn export_preset(&mut self, preset: &Preset) {
         let Some(path) = rfd::FileDialog::new()
@@ -356,11 +408,32 @@ impl eframe::App for FormantApp {
                 }
             }
         }
+        // Recover from a lost audio device (unplug, disable, default change) by
+        // restarting the engine, throttled so a truly-gone device doesn't loop.
+        if self.engine.device_lost() {
+            let due = self.last_recovery.map_or(true, |t| t.elapsed().as_secs_f32() > 3.0);
+            if due {
+                crate::logging::line("audio device lost; restarting the engine to recover");
+                self.restart_engine();
+                self.last_recovery = Some(std::time::Instant::now());
+                self.refresh_devices();
+            }
+        }
+
         // Closing the window hides to the tray instead of quitting.
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
             if self.tray.is_some() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                // Reassure the user the first time, so it doesn't seem stuck.
+                if !self.config.seen_tray_hint {
+                    crate::platform::notify(
+                        "Formant",
+                        "Formant is still running in the system tray, so your processed mic keeps working. Click the tray icon to bring the window back, or use Quit there to exit.",
+                    );
+                    self.config.seen_tray_hint = true;
+                    let _ = self.config.save();
+                }
             } else {
                 self.quitting = true;
             }
@@ -394,6 +467,7 @@ impl eframe::App for FormantApp {
                 Tab::Setup => self.tab_setup(ui),
             }
         });
+        self.welcome_overlay(&ctx);
 
         if self.graph != self.last_pushed {
             self.engine.push_graph(&self.graph);
@@ -423,6 +497,7 @@ impl FormantApp {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let needs_cable = !self.render_devices.is_empty()
             && formant_audio::devices::detect_cable(&self.render_devices).is_none();
+        let audio_lost = self.engine.device_lost();
         egui::Panel::top("top").show_inside(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -438,7 +513,15 @@ impl FormantApp {
                         self.tab = tab;
                     }
                 }
-                if needs_cable {
+                if audio_lost {
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new("● audio device changed, reconnecting")
+                            .color(theme::EMBER)
+                            .small(),
+                    )
+                    .on_hover_text("An audio device was unplugged or changed. Formant is restarting the stream.");
+                } else if needs_cable {
                     ui.add_space(10.0);
                     if ui
                         .button(RichText::new("● no virtual cable").color(theme::EMBER).small())
@@ -1048,19 +1131,42 @@ impl FormantApp {
 
             ui.add_space(8.0);
             theme::card(ui.style()).show(ui, |ui| {
-                ui.label(RichText::new("DEVICES (name match)").color(theme::CYAN).strong());
+                ui.label(RichText::new("DEVICES").color(theme::CYAN).strong());
                 self.virtual_cable_notice(ui);
                 ui.label(RichText::new(format!("mic now: {}", self.engine.mic_name)).color(theme::MUTED).small());
+
+                // Clone the device lists so the dropdown closures don't fight the
+                // borrow checker over self.
+                let caps = self.capture_devices.clone();
+                let rends = self.render_devices.clone();
+
                 ui.horizontal(|ui| {
                     ui.label("mic");
-                    ui.add(egui::TextEdit::singleline(&mut self.config.devices.mic));
+                    let cur = self.config.devices.mic.clone();
+                    egui::ComboBox::from_id_salt("mic-select")
+                        .selected_text(if cur.is_empty() { "(choose a microphone)".into() } else { cur })
+                        .width(360.0)
+                        .show_ui(ui, |ui| {
+                            for d in &caps {
+                                ui.selectable_value(&mut self.config.devices.mic, d.clone(), d);
+                            }
+                        });
                 });
+
                 let mut remove: Option<usize> = None;
                 for i in 0..self.config.devices.outputs.len() {
                     ui.horizontal(|ui| {
                         ui.label("out");
-                        ui.add(egui::TextEdit::singleline(&mut self.config.devices.outputs[i]));
-                        if ui.button("✕").clicked() {
+                        let cur = self.config.devices.outputs[i].clone();
+                        egui::ComboBox::from_id_salt(("out-select", i))
+                            .selected_text(if cur.is_empty() { "(choose an output)".into() } else { cur })
+                            .width(360.0)
+                            .show_ui(ui, |ui| {
+                                for d in &rends {
+                                    ui.selectable_value(&mut self.config.devices.outputs[i], d.clone(), d);
+                                }
+                            });
+                        if ui.button("✕").on_hover_text("Remove this output").clicked() {
                             remove = Some(i);
                         }
                     });
@@ -1068,29 +1174,36 @@ impl FormantApp {
                 if let Some(i) = remove {
                     self.config.devices.outputs.remove(i);
                 }
+
                 ui.horizontal(|ui| {
-                    if ui.button("+ output").clicked() {
+                    if ui.button("+ output").on_hover_text("Add another device to send the processed signal to.").clicked() {
                         self.config.devices.outputs.push(String::new());
                     }
-                    if ui.button("Apply & restart").clicked() {
+                    if ui.button("Apply & restart").on_hover_text("Switch to the selected devices.").clicked() {
                         self.restart_engine();
                     }
-                    if ui.button("List devices").clicked() {
+                    if ui.button("Rescan").on_hover_text("Re-list the audio devices.").clicked() {
                         self.refresh_devices();
                     }
                 });
-                if !self.capture_devices.is_empty() || !self.render_devices.is_empty() {
-                    ui.collapsing("available devices", |ui| {
-                        ui.label(RichText::new("capture:").color(theme::EMBER).small());
-                        for d in &self.capture_devices {
-                            ui.label(RichText::new(d).small());
-                        }
-                        ui.label(RichText::new("render:").color(theme::EMBER).small());
-                        for d in &self.render_devices {
-                            ui.label(RichText::new(d).small());
-                        }
+
+                ui.collapsing("Advanced (match by name)", |ui| {
+                    ui.label(
+                        RichText::new("Formant matches devices by case-insensitive substring, so a partial name like \"CABLE Input\" keeps working even if the full name changes.")
+                            .color(theme::MUTED)
+                            .small(),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("mic");
+                        ui.add(egui::TextEdit::singleline(&mut self.config.devices.mic));
                     });
-                }
+                    for i in 0..self.config.devices.outputs.len() {
+                        ui.horizontal(|ui| {
+                            ui.label("out");
+                            ui.add(egui::TextEdit::singleline(&mut self.config.devices.outputs[i]));
+                        });
+                    }
+                });
             });
 
             ui.add_space(8.0);
@@ -1146,6 +1259,24 @@ impl FormantApp {
                         .color(theme::MUTED)
                         .small(),
                 );
+            });
+
+            ui.add_space(8.0);
+            theme::card(ui.style()).show(ui, |ui| {
+                ui.label(RichText::new("ABOUT").color(theme::CYAN).strong());
+                ui.label(
+                    RichText::new(format!("Formant {}", env!("CARGO_PKG_VERSION")))
+                        .color(theme::MUTED)
+                        .small(),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Check for updates").on_hover_text("Opens the Releases page in your browser. Formant never checks on its own.").clicked() {
+                        crate::platform::open_url("https://github.com/ABowlOfEleven/Formant/releases");
+                    }
+                    if ui.button("View on GitHub").clicked() {
+                        crate::platform::open_url("https://github.com/ABowlOfEleven/Formant");
+                    }
+                });
             });
 
             if !self.status.is_empty() {

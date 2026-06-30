@@ -118,6 +118,12 @@ impl Engine {
         })
     }
 
+    /// True once a capture/render thread has died (device unplugged/invalidated).
+    /// The UI watches this to restart the engine and recover.
+    pub fn device_lost(&self) -> bool {
+        self.stats.device_lost.load(Ordering::Relaxed)
+    }
+
     /// Push an edited graph to the audio thread.
     pub fn push_graph(&self, g: &Graph) {
         if let Ok(mut guard) = self.graph.lock() {
