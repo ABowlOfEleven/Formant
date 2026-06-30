@@ -31,6 +31,34 @@ pub fn is_first_instance() -> bool {
     }
 }
 
+/// Open a URL (or path) in the user's default handler, e.g. the web browser.
+pub fn open_url(url: &str) {
+    #[cfg(windows)]
+    {
+        use windows::core::{HSTRING, PCWSTR};
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let verb = HSTRING::from("open");
+        let target = HSTRING::from(url);
+        // SAFETY: ShellExecuteW with a static "open" verb and a valid wide string;
+        // the returned instance handle is informational and ignored.
+        unsafe {
+            ShellExecuteW(
+                None,
+                PCWSTR(verb.as_ptr()),
+                PCWSTR(target.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = url;
+    }
+}
+
 #[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]

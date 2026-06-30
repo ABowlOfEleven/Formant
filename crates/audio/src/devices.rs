@@ -149,3 +149,66 @@ pub fn friendly_name(device: &IMMDevice) -> Result<String> {
             .context("friendly name was not valid UTF-16")
     }
 }
+
+/// A virtual audio cable Formant can route its processed output into, so other
+/// apps read it as a microphone. Until Formant ships its own driver, one of these
+/// has to be installed.
+#[derive(Debug, Clone, Copy)]
+pub struct VirtualCable {
+    /// Product name shown to the user.
+    pub name: &'static str,
+    /// Fragment of the render-endpoint name that identifies it (the device
+    /// Formant plays into). Matched case-insensitively.
+    pub render_hint: &'static str,
+    /// Where to download it.
+    pub url: &'static str,
+}
+
+/// Virtual cables Formant recognizes, in the order we recommend them.
+pub const KNOWN_CABLES: &[VirtualCable] = &[
+    VirtualCable {
+        name: "VB-CABLE",
+        render_hint: "CABLE Input",
+        url: "https://vb-audio.com/Cable/",
+    },
+    VirtualCable {
+        name: "VoiceMeeter",
+        render_hint: "VoiceMeeter Input",
+        url: "https://vb-audio.com/Voicemeeter/",
+    },
+    VirtualCable {
+        name: "Virtual Audio Cable",
+        render_hint: "Virtual Audio Cable",
+        url: "https://vac.muzychenko.net/",
+    },
+];
+
+/// The first recognized virtual cable whose render endpoint appears in the given
+/// list of render-device names, if any. Pure, so it is unit-testable.
+pub fn detect_cable(render_devices: &[String]) -> Option<&'static VirtualCable> {
+    KNOWN_CABLES.iter().find(|cable| {
+        let hint = cable.render_hint.to_lowercase();
+        render_devices.iter().any(|d| d.to_lowercase().contains(&hint))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_vb_cable_by_render_name() {
+        let devices = vec![
+            "Speakers (Realtek)".to_string(),
+            "CABLE Input (VB-Audio Virtual Cable)".to_string(),
+        ];
+        assert_eq!(detect_cable(&devices).map(|c| c.name), Some("VB-CABLE"));
+    }
+
+    #[test]
+    fn no_cable_when_only_real_devices() {
+        let devices = vec!["Speakers (Realtek)".to_string(), "Sound Blaster".to_string()];
+        assert!(detect_cable(&devices).is_none());
+        assert!(detect_cable(&[]).is_none());
+    }
+}

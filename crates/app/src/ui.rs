@@ -53,6 +53,8 @@ pub struct FormantApp {
     quitting: bool,
     session_dirty: bool,
     last_session_save: std::time::Instant,
+    // Tracks tab transitions so we can re-scan devices on entering Setup.
+    last_tab: Option<Tab>,
 }
 
 /// A VST node parameter as shown in the inspector (normalized value).
@@ -64,7 +66,7 @@ struct VstParam {
 
 impl FormantApp {
     pub fn new(config: Config, engine: Engine, com: formant_audio::com::ComGuard, graph: Graph) -> Self {
-        Self {
+        let mut app = Self {
             _com: com,
             engine,
             config,
@@ -89,7 +91,11 @@ impl FormantApp {
             quitting: false,
             session_dirty: false,
             last_session_save: std::time::Instant::now(),
-        }
+            last_tab: None,
+        };
+        // Scan devices up front so the virtual-cable check is ready on first frame.
+        app.refresh_devices();
+        app
     }
 
     /// Pull parameter edits made in plugin GUIs and apply them to the processor,
@@ -213,6 +219,91 @@ impl FormantApp {
             .unwrap_or_default();
     }
 
+    /// Show whether a virtual audio cable is installed, and help the user get one
+    /// or select it. This is the stopgap until Formant ships its own virtual audio
+    /// driver: without a cable, other apps cannot read Formant as a microphone.
+    fn virtual_cable_notice(&mut self, ui: &mut egui::Ui) {
+        use formant_audio::devices::{detect_cable, KNOWN_CABLES};
+
+        if self.render_devices.is_empty() {
+            let mut recheck = false;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Virtual cable: not checked yet.").color(theme::MUTED).small());
+                recheck |= ui.button("Check now").clicked();
+            });
+            if recheck {
+                self.refresh_devices();
+            }
+            return;
+        }
+
+        // `detect_cable` returns a borrow; copy it out so we can mutate self below.
+        let detected = detect_cable(&self.render_devices).copied();
+        let mut open_url: Option<&'static str> = None;
+        let mut recheck = false;
+        let mut add_output: Option<String> = None;
+
+        match detected {
+            Some(cable) => {
+                let full = self
+                    .render_devices
+                    .iter()
+                    .find(|d| d.to_lowercase().contains(&cable.render_hint.to_lowercase()))
+                    .cloned();
+                let already = match &full {
+                    Some(name) => self.config.devices.outputs.iter().any(|o| {
+                        !o.is_empty() && name.to_lowercase().contains(&o.to_lowercase())
+                    }),
+                    None => true,
+                };
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("● Virtual cable found: {}", cable.name))
+                            .color(theme::GOOD)
+                            .small(),
+                    );
+                    if !already {
+                        if let Some(name) = &full {
+                            if ui
+                                .button("Use as output")
+                                .on_hover_text("Add this cable as a Formant output and restart, so other apps hear you.")
+                                .clicked()
+                            {
+                                add_output = Some(name.clone());
+                            }
+                        }
+                    }
+                });
+            }
+            None => {
+                ui.label(RichText::new("No virtual audio cable detected").color(theme::EMBER).strong());
+                ui.label(
+                    RichText::new("Other apps cannot read Formant as a microphone until you install a virtual cable. VB-CABLE is free and installs in a minute.")
+                        .color(theme::MUTED)
+                        .small(),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button(RichText::new("Get VB-CABLE").color(theme::CYAN)).clicked() {
+                        open_url = Some(KNOWN_CABLES[0].url);
+                    }
+                    recheck |= ui.button("Re-check").on_hover_text("Scan the audio devices again after installing.").clicked();
+                });
+            }
+        }
+        ui.add_space(2.0);
+
+        if let Some(url) = open_url {
+            crate::platform::open_url(url);
+        }
+        if recheck {
+            self.refresh_devices();
+        }
+        if let Some(name) = add_output {
+            self.config.devices.outputs.push(name);
+            self.restart_engine();
+        }
+    }
+
     /// Export a preset to a user-chosen `.ron` file (to share/back up).
     fn export_preset(&mut self, preset: &Preset) {
         let Some(path) = rfd::FileDialog::new()
@@ -289,6 +380,12 @@ impl eframe::App for FormantApp {
         }
 
         self.top_bar(ui);
+        // Re-scan devices each time the user enters Setup, so the virtual-cable
+        // check reflects anything they just installed.
+        if self.tab == Tab::Setup && self.last_tab != Some(Tab::Setup) {
+            self.refresh_devices();
+        }
+        self.last_tab = Some(self.tab);
         egui::CentralPanel::default().show_inside(ui, |ui| {
             paint_backdrop(ui);
             match self.tab {
@@ -324,6 +421,8 @@ impl Drop for FormantApp {
 
 impl FormantApp {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
+        let needs_cable = !self.render_devices.is_empty()
+            && formant_audio::devices::detect_cable(&self.render_devices).is_none();
         egui::Panel::top("top").show_inside(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -337,6 +436,16 @@ impl FormantApp {
                 ] {
                     if tab_button(ui, name, self.tab == tab) {
                         self.tab = tab;
+                    }
+                }
+                if needs_cable {
+                    ui.add_space(10.0);
+                    if ui
+                        .button(RichText::new("● no virtual cable").color(theme::EMBER).small())
+                        .on_hover_text("Apps cannot read Formant as a microphone until a virtual cable is installed. Click to open Setup.")
+                        .clicked()
+                    {
+                        self.tab = Tab::Setup;
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -940,6 +1049,7 @@ impl FormantApp {
             ui.add_space(8.0);
             theme::card(ui.style()).show(ui, |ui| {
                 ui.label(RichText::new("DEVICES (name match)").color(theme::CYAN).strong());
+                self.virtual_cable_notice(ui);
                 ui.label(RichText::new(format!("mic now: {}", self.engine.mic_name)).color(theme::MUTED).small());
                 ui.horizontal(|ui| {
                     ui.label("mic");
