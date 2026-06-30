@@ -9,6 +9,8 @@ pub mod deesser;
 pub mod denoise;
 pub mod eq;
 pub mod gate;
+pub mod limiter;
+pub mod saturator;
 
 pub use biquad::Biquad;
 pub use compressor::Compressor;
@@ -16,6 +18,8 @@ pub use deesser::DeEsser;
 pub use denoise::Denoise;
 pub use eq::Eq;
 pub use gate::Gate;
+pub use limiter::Limiter;
+pub use saturator::Saturator;
 
 /// One-pole smoothing coefficient for a time constant in milliseconds. Shared by
 /// the gate, compressor, and de-esser envelope followers.

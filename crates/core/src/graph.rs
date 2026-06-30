@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dsp::{Biquad, Compressor, DeEsser, Denoise, Eq, Gate};
+use crate::dsp::{Biquad, Compressor, DeEsser, Denoise, Eq, Gate, Limiter, Saturator};
 use crate::engine::GateOverride;
 use crate::types::Sample;
 use crate::SAMPLE_RATE;
@@ -42,19 +42,25 @@ pub enum NodeKind {
     DeEsser,
     Compressor,
     Eq,
+    Saturator,
+    Limiter,
+    Gain,
     Makeup,
     Vst3,
 }
 
 impl NodeKind {
     /// Effect kinds the user can add (Input/Output are fixed).
-    pub const EFFECTS: [NodeKind; 7] = [
+    pub const EFFECTS: [NodeKind; 10] = [
         NodeKind::HighPass,
         NodeKind::Denoise,
         NodeKind::Gate,
         NodeKind::DeEsser,
         NodeKind::Compressor,
         NodeKind::Eq,
+        NodeKind::Saturator,
+        NodeKind::Limiter,
+        NodeKind::Gain,
         NodeKind::Makeup,
     ];
 
@@ -68,6 +74,9 @@ impl NodeKind {
             NodeKind::DeEsser => "De-esser",
             NodeKind::Compressor => "Compressor",
             NodeKind::Eq => "EQ",
+            NodeKind::Saturator => "Saturator",
+            NodeKind::Limiter => "Limiter",
+            NodeKind::Gain => "Gain",
             NodeKind::Makeup => "Makeup",
             NodeKind::Vst3 => "VST3",
         }
@@ -79,10 +88,24 @@ impl NodeKind {
             NodeKind::Output => NodeParams::Output,
             NodeKind::HighPass => NodeParams::HighPass { cutoff_hz: 80.0 },
             NodeKind::Denoise => NodeParams::Denoise,
-            NodeKind::Gate => NodeParams::Gate { threshold: 0.02, vad_gate: true },
-            NodeKind::DeEsser => NodeParams::DeEsser { threshold_db: -30.0, ratio: 4.0 },
+            NodeKind::Gate => NodeParams::Gate {
+                threshold_db: -45.0,
+                range_db: -60.0,
+                attack_ms: 2.0,
+                hold_ms: 40.0,
+                release_ms: 120.0,
+                vad_gate: true,
+            },
+            NodeKind::DeEsser => NodeParams::DeEsser {
+                threshold_db: -28.0,
+                ratio: 4.0,
+                split_hz: 6500.0,
+            },
             NodeKind::Compressor => NodeParams::Compressor { threshold_db: -18.0, ratio: 3.0 },
             NodeKind::Eq => NodeParams::Eq { low_db: 0.0, mid_db: 0.0, high_db: 0.0 },
+            NodeKind::Saturator => NodeParams::Saturator { drive: 2.0, mix: 0.3 },
+            NodeKind::Limiter => NodeParams::Limiter { ceiling_db: -1.0 },
+            NodeKind::Gain => NodeParams::Gain { gain_db: 0.0 },
             NodeKind::Makeup => NodeParams::Makeup { gain_db: 0.0 },
             NodeKind::Vst3 => NodeParams::Vst3 {
                 binary: String::new(),
@@ -102,10 +125,20 @@ pub enum NodeParams {
     Output,
     HighPass { cutoff_hz: f32 },
     Denoise,
-    Gate { threshold: f32, vad_gate: bool },
-    DeEsser { threshold_db: f32, ratio: f32 },
+    Gate {
+        threshold_db: f32,
+        range_db: f32,
+        attack_ms: f32,
+        hold_ms: f32,
+        release_ms: f32,
+        vad_gate: bool,
+    },
+    DeEsser { threshold_db: f32, ratio: f32, split_hz: f32 },
     Compressor { threshold_db: f32, ratio: f32 },
     Eq { low_db: f32, mid_db: f32, high_db: f32 },
+    Saturator { drive: f32, mix: f32 },
+    Limiter { ceiling_db: f32 },
+    Gain { gain_db: f32 },
     Makeup { gain_db: f32 },
     /// A hosted VST3 plugin. `params` persists edited (id, normalized) values so
     /// presets remember the plugin's settings; re-applied on instantiation.
@@ -123,6 +156,9 @@ impl NodeParams {
             NodeParams::DeEsser { .. } => NodeKind::DeEsser,
             NodeParams::Compressor { .. } => NodeKind::Compressor,
             NodeParams::Eq { .. } => NodeKind::Eq,
+            NodeParams::Saturator { .. } => NodeKind::Saturator,
+            NodeParams::Limiter { .. } => NodeKind::Limiter,
+            NodeParams::Gain { .. } => NodeKind::Gain,
             NodeParams::Makeup { .. } => NodeKind::Makeup,
             NodeParams::Vst3 { .. } => NodeKind::Vst3,
         }
@@ -272,6 +308,9 @@ enum NodeProc {
     DeEsser(DeEsser),
     Compressor(Compressor),
     Eq(Eq),
+    Saturator(Saturator),
+    Limiter(Limiter),
+    Gain(f32),
     Makeup(f32),
 }
 
@@ -287,12 +326,14 @@ impl NodeProc {
                 NodeProc::HighPass(Biquad::highpass(SAMPLE_RATE, cutoff_hz, 0.707))
             }
             NodeParams::Denoise => NodeProc::Denoise(Box::new(Denoise::new())),
-            NodeParams::Gate { threshold, vad_gate } => NodeProc::Gate {
-                gate: Gate::new(SAMPLE_RATE, threshold, 5.0, 80.0),
-                vad_gate,
-            },
-            NodeParams::DeEsser { threshold_db, ratio } => {
-                NodeProc::DeEsser(DeEsser::new(SAMPLE_RATE, 6000.0, threshold_db, ratio))
+            NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate } => {
+                NodeProc::Gate {
+                    gate: Gate::new(SAMPLE_RATE, threshold_db, range_db, attack_ms, hold_ms, release_ms),
+                    vad_gate,
+                }
+            }
+            NodeParams::DeEsser { threshold_db, ratio, split_hz } => {
+                NodeProc::DeEsser(DeEsser::new(SAMPLE_RATE, split_hz, threshold_db, ratio))
             }
             NodeParams::Compressor { threshold_db, ratio } => {
                 NodeProc::Compressor(Compressor::new(SAMPLE_RATE, threshold_db, ratio, 10.0, 80.0, 0.0))
@@ -300,6 +341,11 @@ impl NodeProc {
             NodeParams::Eq { low_db, mid_db, high_db } => {
                 NodeProc::Eq(Eq::new(SAMPLE_RATE, low_db, mid_db, high_db))
             }
+            NodeParams::Saturator { drive, mix } => NodeProc::Saturator(Saturator::new(drive, mix)),
+            NodeParams::Limiter { ceiling_db } => {
+                NodeProc::Limiter(Limiter::new(SAMPLE_RATE, ceiling_db))
+            }
+            NodeParams::Gain { gain_db } => NodeProc::Gain(crate::dsp::db_to_lin(gain_db)),
             NodeParams::Makeup { gain_db } => NodeProc::Makeup(crate::dsp::db_to_lin(gain_db)),
         }
     }
@@ -313,6 +359,9 @@ impl NodeProc {
             NodeProc::DeEsser(_) => NodeKind::DeEsser,
             NodeProc::Compressor(_) => NodeKind::Compressor,
             NodeProc::Eq(_) => NodeKind::Eq,
+            NodeProc::Saturator(_) => NodeKind::Saturator,
+            NodeProc::Limiter(_) => NodeKind::Limiter,
+            NodeProc::Gain(_) => NodeKind::Gain,
             NodeProc::Makeup(_) => NodeKind::Makeup,
         }
     }
@@ -323,13 +372,15 @@ impl NodeProc {
             (NodeProc::HighPass(b), NodeParams::HighPass { cutoff_hz }) => {
                 *b = Biquad::highpass(SAMPLE_RATE, *cutoff_hz, 0.707);
             }
-            (NodeProc::Gate { gate, vad_gate }, NodeParams::Gate { threshold, vad_gate: vg }) => {
-                gate.set_threshold(*threshold);
+            (
+                NodeProc::Gate { gate, vad_gate },
+                NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate: vg },
+            ) => {
+                gate.configure(*threshold_db, *range_db, *attack_ms, *hold_ms, *release_ms);
                 *vad_gate = *vg;
             }
-            (NodeProc::DeEsser(d), NodeParams::DeEsser { threshold_db, ratio }) => {
-                d.set_threshold_db(*threshold_db);
-                d.set_ratio(*ratio);
+            (NodeProc::DeEsser(d), NodeParams::DeEsser { threshold_db, ratio, split_hz }) => {
+                d.configure(*split_hz, *threshold_db, *ratio);
             }
             (NodeProc::Compressor(c), NodeParams::Compressor { threshold_db, ratio }) => {
                 c.set_threshold_db(*threshold_db);
@@ -337,6 +388,15 @@ impl NodeProc {
             }
             (NodeProc::Eq(eq), NodeParams::Eq { low_db, mid_db, high_db }) => {
                 eq.set_gains(*low_db, *mid_db, *high_db);
+            }
+            (NodeProc::Saturator(s), NodeParams::Saturator { drive, mix }) => {
+                s.configure(*drive, *mix);
+            }
+            (NodeProc::Limiter(l), NodeParams::Limiter { ceiling_db }) => {
+                l.configure(*ceiling_db);
+            }
+            (NodeProc::Gain(g), NodeParams::Gain { gain_db }) => {
+                *g = crate::dsp::db_to_lin(*gain_db);
             }
             (NodeProc::Makeup(g), NodeParams::Makeup { gain_db }) => {
                 *g = crate::dsp::db_to_lin(*gain_db);
@@ -397,7 +457,17 @@ impl NodeProc {
                     *o = eq.process(x);
                 }
             }
-            NodeProc::Makeup(g) => {
+            NodeProc::Saturator(s) => {
+                for (o, &x) in output.iter_mut().zip(input) {
+                    *o = s.process(x);
+                }
+            }
+            NodeProc::Limiter(l) => {
+                for (o, &x) in output.iter_mut().zip(input) {
+                    *o = l.process(x);
+                }
+            }
+            NodeProc::Gain(g) | NodeProc::Makeup(g) => {
                 for (o, &x) in output.iter_mut().zip(input) {
                     *o = x * *g;
                 }

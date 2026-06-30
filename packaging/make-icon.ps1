@@ -42,6 +42,24 @@ Wave ([System.Drawing.Color]::FromArgb(255, 34, 211, 238)) 14 48 0.0 122
 
 $g.Dispose()
 
+# Export raw RGBA (for the egui window/title-bar icon — no image-crate decode).
+$rgbaOut = Join-Path (Split-Path $Out) 'icon.rgba'
+$rect = New-Object System.Drawing.Rectangle(0, 0, $size, $size)
+$data = $bmp.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+$len = $data.Stride * $size
+$buf = New-Object byte[] $len
+[System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $buf, 0, $len)
+$bmp.UnlockBits($data)
+$rgba = New-Object byte[] ($size * $size * 4)
+for ($i = 0; $i -lt ($size * $size); $i++) {
+    $rgba[$i * 4 + 0] = $buf[$i * 4 + 2] # R <- B
+    $rgba[$i * 4 + 1] = $buf[$i * 4 + 1] # G
+    $rgba[$i * 4 + 2] = $buf[$i * 4 + 0] # B <- R
+    $rgba[$i * 4 + 3] = $buf[$i * 4 + 3] # A
+}
+[System.IO.File]::WriteAllBytes($rgbaOut, $rgba)
+Write-Host "wrote $rgbaOut ($($rgba.Length) bytes, ${size}x${size})"
+
 # Save as .ico via an HICON.
 $hicon = $bmp.GetHicon()
 $icon = [System.Drawing.Icon]::FromHandle($hicon)

@@ -210,6 +210,20 @@ unsafe fn build(
     controller.setComponentHandler(handler.as_ptr());
     let params = enumerate_params(Some(&controller));
 
+    // Now that params are enumerated, DISCONNECT the controller from the
+    // component. They live on separate threads for the rest of their lives; an
+    // active connection lets one half call into the other while it's being torn
+    // down (the load/unload/preset-change crash). Parameter automation reaches
+    // the processor via inputParameterChanges (host-mediated), not this link.
+    if separate {
+        if let (Some(cp_comp), Some(cp_ctrl)) =
+            (component.cast::<IConnectionPoint>(), controller.cast::<IConnectionPoint>())
+        {
+            cp_comp.disconnect(cp_ctrl.as_ptr());
+            cp_ctrl.disconnect(cp_comp.as_ptr());
+        }
+    }
+
     let processor_half = PluginInstance {
         _module: Arc::clone(&module),
         _host_context: host_context.clone(),

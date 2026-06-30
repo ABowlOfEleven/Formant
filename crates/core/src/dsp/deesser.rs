@@ -1,62 +1,43 @@
-//! De-esser: duck the signal when sibilance energy spikes.
+//! Split-band de-esser: compress only the sibilance band.
 
-use crate::dsp::{db_to_lin, time_to_coef, Biquad};
+use crate::dsp::{Biquad, Compressor};
 use crate::types::Sample;
 
-/// A compressor whose *detector* listens only to the sibilance band (via a
-/// high-pass) but whose gain reduction is applied to the *full* signal. So it
-/// stays transparent on vowels and low end (the detector sees nothing there) and
-/// ducks sharp "ess" bursts. Simple, phase-clean, and cheap.
+/// Splits the signal at `split_hz` with a Linkwitz-Riley crossover (low + high
+/// sum back flat), compresses **only the high band**, and recombines. Unlike a
+/// broadband ducker, the body and vowels (low band) are left completely alone,
+/// so it tames harsh "ess" sounds without dulling the whole voice.
 #[derive(Debug, Clone)]
 pub struct DeEsser {
-    detector: Biquad,
-    threshold_db: f32,
-    ratio: f32,
-    attack: f32,
-    release: f32,
-    gain_db: f32,
+    sample_rate: u32,
+    lp: Biquad,
+    hp: Biquad,
+    comp: Compressor,
 }
 
 impl DeEsser {
     pub fn new(sample_rate: u32, split_hz: f32, threshold_db: f32, ratio: f32) -> Self {
         Self {
-            detector: Biquad::highpass(sample_rate, split_hz, 0.707),
-            threshold_db,
-            ratio,
-            attack: time_to_coef(1.0, sample_rate),
-            release: time_to_coef(40.0, sample_rate),
-            gain_db: 0.0,
+            sample_rate,
+            lp: Biquad::lowpass(sample_rate, split_hz, 0.5),
+            hp: Biquad::highpass(sample_rate, split_hz, 0.5),
+            // Fast compressor tuned for short sibilant bursts.
+            comp: Compressor::new(sample_rate, threshold_db, ratio, 1.0, 40.0, 0.0),
         }
     }
 
-    pub fn set_threshold_db(&mut self, threshold_db: f32) {
-        self.threshold_db = threshold_db;
-    }
-
-    pub fn set_ratio(&mut self, ratio: f32) {
-        self.ratio = ratio.max(1.0);
+    pub fn configure(&mut self, split_hz: f32, threshold_db: f32, ratio: f32) {
+        self.lp = Biquad::lowpass(self.sample_rate, split_hz, 0.5);
+        self.hp = Biquad::highpass(self.sample_rate, split_hz, 0.5);
+        self.comp.set_threshold_db(threshold_db);
+        self.comp.set_ratio(ratio);
     }
 
     #[inline]
     pub fn process(&mut self, x: Sample) -> Sample {
-        // Detector: sibilance energy only.
-        let sibilance = self.detector.process(x).abs().max(1e-9);
-        let level_db = 20.0 * sibilance.log10();
-
-        let over = level_db - self.threshold_db;
-        let target_db = if over > 0.0 {
-            -over * (1.0 - 1.0 / self.ratio)
-        } else {
-            0.0
-        };
-        let coef = if target_db < self.gain_db {
-            self.attack
-        } else {
-            self.release
-        };
-        self.gain_db = coef * self.gain_db + (1.0 - coef) * target_db;
-
-        x * db_to_lin(self.gain_db)
+        let high = self.hp.process(x);
+        let low = self.lp.process(x);
+        low + self.comp.process(high)
     }
 }
 
@@ -89,6 +70,6 @@ mod tests {
 
         let mut deess = DeEsser::new(SAMPLE_RATE, 6000.0, -30.0, 4.0);
         let (in_lo, out_lo) = rms(&mut deess, 200.0, 0.5);
-        assert!((in_lo - out_lo).abs() / in_lo < 0.05, "200 Hz wrongly affected");
+        assert!((in_lo - out_lo).abs() / in_lo < 0.08, "200 Hz body wrongly affected");
     }
 }

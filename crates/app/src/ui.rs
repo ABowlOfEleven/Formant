@@ -16,7 +16,7 @@ use formant_core::{Config, Graph, MuteMode, NodeId, NodeKind, NodeParams, Preset
 use crate::engine::Engine;
 use crate::theme;
 
-const NODE_SIZE: Vec2 = Vec2::new(150.0, 62.0);
+const NODE_SIZE: Vec2 = Vec2::new(170.0, 66.0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -43,6 +43,7 @@ pub struct FormantApp {
     selected: Option<NodeId>,
     dragging_from: Option<NodeId>,
     pan: Vec2,
+    zoom: f32,
     // VST3 state.
     plugins: Vec<formant_vst3::Plugin>,
     installed_vsts: HashSet<NodeId>,
@@ -75,6 +76,7 @@ impl FormantApp {
             selected: None,
             dragging_from: None,
             pan: Vec2::ZERO,
+            zoom: 1.0,
             plugins: Vec::new(),
             installed_vsts: HashSet::new(),
             node_params: HashMap::new(),
@@ -222,11 +224,14 @@ impl eframe::App for FormantApp {
         }
 
         self.top_bar(ui);
-        egui::CentralPanel::default().show_inside(ui, |ui| match self.tab {
-            Tab::Mixer => self.tab_mixer(ui),
-            Tab::Nodes => self.tab_nodes(ui),
-            Tab::Presets => self.tab_presets(ui),
-            Tab::Settings => self.tab_settings(ui),
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            paint_backdrop(ui);
+            match self.tab {
+                Tab::Mixer => self.tab_mixer(ui),
+                Tab::Nodes => self.tab_nodes(ui),
+                Tab::Presets => self.tab_presets(ui),
+                Tab::Settings => self.tab_settings(ui),
+            }
         });
 
         if self.graph != self.last_pushed {
@@ -241,18 +246,18 @@ impl eframe::App for FormantApp {
 impl FormantApp {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("top").show_inside(ui, |ui| {
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("FORMANT").color(theme::CYAN).strong().size(20.0));
-                ui.label(RichText::new("vocal processor").color(theme::MUTED).small());
-                ui.separator();
+                ui.label(RichText::new("FORMANT").color(theme::CYAN).strong().size(22.0));
+                ui.label(RichText::new("· vocal processor").color(theme::MUTED).small());
+                ui.add_space(14.0);
                 for (tab, name) in [
                     (Tab::Mixer, "Mixer"),
                     (Tab::Nodes, "Nodes"),
                     (Tab::Presets, "Presets"),
                     (Tab::Settings, "Settings"),
                 ] {
-                    if ui.selectable_label(self.tab == tab, name).clicked() {
+                    if tab_button(ui, name, self.tab == tab) {
                         self.tab = tab;
                     }
                 }
@@ -261,14 +266,21 @@ impl FormantApp {
                     let (txt, col) = if bypassed {
                         ("● BYPASSED", theme::EMBER)
                     } else {
-                        ("○ live", theme::GOOD)
+                        ("● live", theme::GOOD)
                     };
-                    if ui.button(RichText::new(txt).color(col)).clicked() {
+                    if ui.button(RichText::new(txt).color(col).strong()).clicked() {
                         self.engine.controls.toggle_bypass();
                     }
                 });
             });
-            ui.add_space(4.0);
+            ui.add_space(6.0);
+            // Accent rule under the header.
+            let r = ui.max_rect();
+            let y = r.bottom();
+            ui.painter().line_segment(
+                [egui::pos2(r.left(), y), egui::pos2(r.right(), y)],
+                egui::Stroke::new(1.5, theme::CYAN.gamma_multiply(0.5)),
+            );
         });
     }
 
@@ -279,10 +291,10 @@ impl FormantApp {
         };
         theme::card(ui.style()).show(ui, |ui| {
             ui.label(RichText::new("METERS").color(theme::CYAN).strong());
-            meter(ui, "input", in_peak, theme::CYAN);
-            meter(ui, "output", out_peak, theme::GOOD);
-            meter(ui, "voice (VAD)", vad, theme::EMBER);
-            meter(ui, "comp GR", (gr / 20.0).clamp(0.0, 1.0), theme::EMBER);
+            meter(ui, "input", in_peak);
+            meter(ui, "output", out_peak);
+            meter(ui, "voice (VAD)", vad);
+            meter(ui, "comp GR", (gr / 20.0).clamp(0.0, 1.0));
         });
 
         ui.add_space(8.0);
@@ -339,7 +351,7 @@ impl FormantApp {
 
     fn draw_canvas(&mut self, ui: &mut egui::Ui, canvas: Rect, bg: egui::Response) {
         let painter = ui.painter_at(canvas);
-        painter.rect_filled(canvas, CornerRadius::same(4), theme::BG);
+        painter.rect_filled(canvas, CornerRadius::same(8), theme::BG);
 
         if self.dragging_from.is_none() && bg.dragged() {
             self.pan += bg.drag_delta();
@@ -348,17 +360,51 @@ impl FormantApp {
             self.selected = None;
         }
 
+        // Scroll-wheel zoom, anchored at the cursor.
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll.abs() > 0.0 {
+            if let Some(cur) = pointer {
+                if canvas.contains(cur) {
+                    let old = self.zoom;
+                    let new = (old * (scroll * 0.0015).exp()).clamp(0.35, 3.0);
+                    let world = (cur - canvas.min - self.pan) / old;
+                    self.pan = (cur - canvas.min) - world * new;
+                    self.zoom = new;
+                }
+            }
+        }
+        let zoom = self.zoom;
+        let ns = NODE_SIZE * zoom;
         let origin = canvas.min.to_vec2() + self.pan;
+        let to_screen = |p: [f32; 2]| Pos2::new(origin.x + p[0] * zoom, origin.y + p[1] * zoom);
+
+        // Glowing dot grid (pans + scales with the canvas).
+        let step = (28.0 * zoom).max(16.0);
+        let glow = theme::CYAN.gamma_multiply(0.07);
+        let dot = theme::CYAN.gamma_multiply(0.22);
+        let ox = self.pan.x.rem_euclid(step);
+        let oy = self.pan.y.rem_euclid(step);
+        let mut gx = canvas.min.x + ox;
+        while gx < canvas.max.x {
+            let mut gy = canvas.min.y + oy;
+            while gy < canvas.max.y {
+                let c = Pos2::new(gx, gy);
+                painter.circle_filled(c, 2.6, glow);
+                painter.circle_filled(c, 1.1, dot);
+                gy += step;
+            }
+            gx += step;
+        }
+
         // Snapshot positions/kinds so we don't borrow the graph while mutating it.
         let layout: HashMap<NodeId, (Pos2, NodeKind, bool)> = self
             .graph
             .nodes
             .iter()
-            .map(|n| (n.id, (Pos2::new(origin.x + n.pos[0], origin.y + n.pos[1]), n.params.kind(), n.bypass)))
+            .map(|n| (n.id, (to_screen(n.pos), n.params.kind(), n.bypass)))
             .collect();
-        let conns = self.graph.connections.clone();
         let ids: Vec<NodeId> = self.graph.nodes.iter().map(|n| n.id).collect();
-        // Display labels (VST nodes show the plugin name).
         let labels: HashMap<NodeId, String> = self
             .graph
             .nodes
@@ -367,16 +413,14 @@ impl FormantApp {
             .collect();
 
         // Wires (under nodes).
-        for c in &conns {
+        for c in &self.graph.connections.clone() {
             if let (Some(&(fp, ..)), Some(&(tp, ..))) = (layout.get(&c.from), layout.get(&c.to)) {
-                wire(&painter, fp + Vec2::new(NODE_SIZE.x, NODE_SIZE.y * 0.5), tp + Vec2::new(0.0, NODE_SIZE.y * 0.5));
+                wire(&painter, fp + Vec2::new(ns.x, ns.y * 0.5), tp + Vec2::new(0.0, ns.y * 0.5), theme::CYAN.gamma_multiply(0.85));
             }
         }
-        // Pending wire while dragging from an output port.
         if let Some(fid) = self.dragging_from {
             if let (Some(&(fp, ..)), Some(ptr)) = (layout.get(&fid), ui.input(|i| i.pointer.interact_pos())) {
-                let out = fp + Vec2::new(NODE_SIZE.x, NODE_SIZE.y * 0.5);
-                painter.line_segment([out, ptr], Stroke::new(2.0, theme::EMBER));
+                wire(&painter, fp + Vec2::new(ns.x, ns.y * 0.5), ptr, theme::EMBER);
             }
         }
 
@@ -384,12 +428,12 @@ impl FormantApp {
         for id in &ids {
             let id = *id;
             let &(pos, kind, bypass) = layout.get(&id).unwrap();
-            let rect = Rect::from_min_size(pos, NODE_SIZE);
+            let rect = Rect::from_min_size(pos, ns);
 
             let resp = ui.interact(rect, egui::Id::new(("fmt_node", id)), Sense::click_and_drag());
             if resp.dragged() {
                 if let Some(n) = self.graph.node_mut(id) {
-                    let d = resp.drag_delta();
+                    let d = resp.drag_delta() / zoom; // screen -> world
                     n.pos[0] += d.x;
                     n.pos[1] += d.y;
                 }
@@ -399,32 +443,53 @@ impl FormantApp {
             }
 
             let selected = self.selected == Some(id);
-            let border = if selected { theme::CYAN } else { theme::CYAN.gamma_multiply(0.4) };
-            painter.rect_filled(rect, CornerRadius::same(6), theme::CARD);
-            painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(if selected { 2.0 } else { 1.0 }, border), StrokeKind::Inside);
-            let title_col = if bypass { theme::MUTED } else { theme::CYAN };
+            let accent = node_accent(kind);
+            let r6 = CornerRadius::same((8.0 * zoom) as u8);
+
+            painter.rect_filled(rect.translate(Vec2::new(0.0, 3.0 * zoom)), r6, Color32::from_black_alpha(80));
+            painter.rect_filled(rect, r6, if selected { theme::CARD_HI } else { theme::CARD });
+            let strip = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 6.0 * zoom));
+            let sr = (8.0 * zoom) as u8;
+            painter.rect_filled(strip, CornerRadius { nw: sr, ne: sr, sw: 0, se: 0 }, accent.gamma_multiply(if bypass { 0.3 } else { 0.95 }));
+            let border = if selected {
+                accent
+            } else if resp.hovered() {
+                theme::lerp(theme::LINE, accent, 0.6)
+            } else {
+                theme::LINE
+            };
+            painter.rect_stroke(rect, r6, Stroke::new(if selected { 2.0 } else { 1.0 }, border), StrokeKind::Inside);
+
+            let title_col = if bypass { theme::MUTED } else { theme::TEXT };
             let label = labels.get(&id).cloned().unwrap_or_else(|| kind.label().to_string());
-            painter.text(rect.min + Vec2::new(12.0, 10.0), Align2::LEFT_TOP, label, FontId::proportional(15.0), title_col);
-            if kind == NodeKind::Vst3 {
-                painter.text(rect.min + Vec2::new(12.0, 32.0), Align2::LEFT_TOP, "vst3", FontId::proportional(10.0), theme::EMBER);
-            }
-            if bypass {
-                painter.text(rect.min + Vec2::new(12.0, 36.0), Align2::LEFT_TOP, "bypassed", FontId::proportional(11.0), theme::EMBER);
+            painter.text(rect.min + Vec2::new(13.0 * zoom, 16.0 * zoom), Align2::LEFT_TOP, label, FontId::proportional(15.0 * zoom), title_col);
+            let sub = if bypass {
+                Some(("bypassed", theme::EMBER))
+            } else if kind == NodeKind::Vst3 {
+                Some(("vst3", theme::EMBER))
+            } else {
+                None
+            };
+            if let Some((s, c)) = sub {
+                painter.text(rect.min + Vec2::new(13.0 * zoom, 40.0 * zoom), Align2::LEFT_TOP, s, FontId::proportional(10.0 * zoom), c);
             }
 
-            // Input port (left) — click to disconnect.
+            let pr = 7.0 * zoom;
+            let pin = 5.0 * zoom;
+            let hit = Vec2::splat(18.0 * zoom);
             if kind != NodeKind::Input {
                 let p = rect.left_center();
-                painter.circle_filled(p, 5.0, theme::EMBER);
-                if ui.interact(Rect::from_center_size(p, Vec2::splat(16.0)), egui::Id::new(("fmt_in", id)), Sense::click()).clicked() {
+                painter.circle_filled(p, pr, theme::BG);
+                painter.circle_filled(p, pin, theme::EMBER);
+                if ui.interact(Rect::from_center_size(p, hit), egui::Id::new(("fmt_in", id)), Sense::click()).clicked() {
                     self.graph.disconnect_into(id);
                 }
             }
-            // Output port (right) — drag to connect.
             if kind != NodeKind::Output {
                 let p = rect.right_center();
-                painter.circle_filled(p, 5.0, theme::CYAN);
-                if ui.interact(Rect::from_center_size(p, Vec2::splat(16.0)), egui::Id::new(("fmt_out", id)), Sense::drag()).drag_started() {
+                painter.circle_filled(p, pr, theme::BG);
+                painter.circle_filled(p, pin, theme::CYAN);
+                if ui.interact(Rect::from_center_size(p, hit), egui::Id::new(("fmt_out", id)), Sense::drag()).drag_started() {
                     self.dragging_from = Some(id);
                 }
             }
@@ -438,7 +503,7 @@ impl FormantApp {
                     .iter()
                     .filter(|(_, (_, kind, _))| *kind != NodeKind::Input)
                     .find(|(_, (pos, ..))| {
-                        Rect::from_center_size(Rect::from_min_size(*pos, NODE_SIZE).left_center(), Vec2::splat(18.0)).contains(ptr)
+                        Rect::from_center_size(Rect::from_min_size(*pos, ns).left_center(), Vec2::splat(20.0 * zoom)).contains(ptr)
                     })
                     .map(|(id, _)| *id);
                 if let Some(to) = target {
@@ -464,6 +529,7 @@ impl FormantApp {
                 self.graph = Graph::default_chain();
                 self.selected = None;
                 self.pan = Vec2::ZERO;
+                self.zoom = 1.0;
             }
         });
 
@@ -523,24 +589,36 @@ impl FormantApp {
                 NodeParams::HighPass { cutoff_hz } => {
                     ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("cutoff Hz"));
                 }
-                NodeParams::Gate { threshold, vad_gate } => {
-                    ui.add(egui::Slider::new(threshold, 0.0..=0.2).text("threshold"));
-                    ui.checkbox(vad_gate, "follow VAD");
+                NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate } => {
+                    ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("threshold dB"));
+                    ui.add(egui::Slider::new(range_db, -90.0..=0.0).text("range dB"));
+                    ui.add(egui::Slider::new(attack_ms, 0.1..=50.0).text("attack ms"));
+                    ui.add(egui::Slider::new(hold_ms, 0.0..=500.0).text("hold ms"));
+                    ui.add(egui::Slider::new(release_ms, 5.0..=1000.0).logarithmic(true).text("release ms"));
+                    ui.checkbox(vad_gate, "follow VAD (RNNoise)");
                 }
-                NodeParams::DeEsser { threshold_db, ratio } => {
-                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr dB"));
+                NodeParams::DeEsser { threshold_db, ratio, split_hz } => {
+                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("threshold dB"));
                     ui.add(egui::Slider::new(ratio, 1.0..=12.0).text("ratio"));
+                    ui.add(egui::Slider::new(split_hz, 3000.0..=12000.0).text("split Hz"));
                 }
                 NodeParams::Compressor { threshold_db, ratio } => {
-                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr dB"));
+                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("threshold dB"));
                     ui.add(egui::Slider::new(ratio, 1.0..=20.0).text("ratio"));
                 }
                 NodeParams::Eq { low_db, mid_db, high_db } => {
-                    ui.add(egui::Slider::new(low_db, -12.0..=12.0).text("low"));
-                    ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid"));
-                    ui.add(egui::Slider::new(high_db, -12.0..=12.0).text("high"));
+                    ui.add(egui::Slider::new(low_db, -12.0..=12.0).text("low dB"));
+                    ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid dB"));
+                    ui.add(egui::Slider::new(high_db, -12.0..=12.0).text("high dB"));
                 }
-                NodeParams::Makeup { gain_db } => {
+                NodeParams::Saturator { drive, mix } => {
+                    ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive"));
+                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"));
+                }
+                NodeParams::Limiter { ceiling_db } => {
+                    ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceiling dB"));
+                }
+                NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } => {
                     ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("gain dB"));
                 }
                 NodeParams::Vst3 { name, params: stored, .. } => {
@@ -558,14 +636,30 @@ impl FormantApp {
                         Some(plist) if !plist.is_empty() => {
                             egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
                                 for p in plist.iter_mut() {
-                                    if ui.add(egui::Slider::new(&mut p.value, 0.0..=1.0).text(&p.name)).changed() {
-                                        let v = p.value as f64;
-                                        self.engine.set_effect_param(id, p.id, v);
-                                        if let Some(ed) = self.editors.get(&id) {
-                                            ed.set_param(p.id, v);
+                                    ui.horizontal(|ui| {
+                                        let resp = ui.add(
+                                            egui::Slider::new(&mut p.value, 0.0..=1.0)
+                                                .show_value(false)
+                                                .text(&p.name),
+                                        );
+                                        if resp.changed() {
+                                            let v = p.value as f64;
+                                            self.engine.set_effect_param(id, p.id, v);
+                                            if let Some(ed) = self.editors.get(&id) {
+                                                ed.set_param(p.id, v);
+                                            }
+                                            upsert_param(stored, p.id, v);
                                         }
-                                        upsert_param(stored, p.id, v);
-                                    }
+                                        // The plugin's own formatted value (e.g. "-3 dB").
+                                        let plain = self
+                                            .editors
+                                            .get(&id)
+                                            .map(|ed| ed.param_string(p.id, p.value as f64))
+                                            .unwrap_or_default();
+                                        if !plain.is_empty() {
+                                            ui.label(RichText::new(plain).color(theme::EMBER).small());
+                                        }
+                                    });
                                 }
                             });
                         }
@@ -744,19 +838,88 @@ impl FormantApp {
     }
 }
 
-fn meter(ui: &mut egui::Ui, label: &str, frac: f32, color: Color32) {
+/// A segmented LED-style level meter (cyan at low, ember toward the top).
+fn meter(ui: &mut egui::Ui, label: &str, frac: f32) {
+    let frac = frac.clamp(0.0, 1.0);
     ui.horizontal(|ui| {
-        ui.add_sized([90.0, 16.0], egui::Label::new(RichText::new(label).color(theme::MUTED).small()));
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(220.0, 14.0), Sense::hover());
+        ui.add_sized([92.0, 16.0], egui::Label::new(RichText::new(label).color(theme::MUTED).small()));
+        let segs = 26usize;
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(228.0, 15.0), Sense::hover());
         let painter = ui.painter();
-        painter.rect_filled(rect, CornerRadius::same(3), theme::BG);
-        let f = frac.clamp(0.0, 1.0);
-        if f > 0.0 {
-            let fill = Rect::from_min_size(rect.min, Vec2::new(rect.width() * f, rect.height()));
-            painter.rect_filled(fill, CornerRadius::same(3), color);
+        painter.rect_filled(rect, CornerRadius::same(4), theme::BG);
+        let gap = 2.0;
+        let inset = 3.0;
+        let seg_w = (rect.width() - 2.0 * inset - gap * (segs as f32 - 1.0)) / segs as f32;
+        let lit = (frac * segs as f32).ceil() as usize;
+        for i in 0..segs {
+            let x = rect.min.x + inset + i as f32 * (seg_w + gap);
+            let sr = Rect::from_min_size(Pos2::new(x, rect.min.y + inset), Vec2::new(seg_w, rect.height() - 2.0 * inset));
+            let t = i as f32 / (segs as f32 - 1.0);
+            let on = i < lit;
+            let col = if on {
+                theme::lerp(theme::CYAN, theme::EMBER, (t * 1.5 - 0.5).clamp(0.0, 1.0))
+            } else {
+                theme::lerp(theme::BG, theme::LINE, 0.5)
+            };
+            painter.rect_filled(sr, CornerRadius::same(1), col);
         }
-        ui.label(RichText::new(format!("{:.0}%", f * 100.0)).small().color(theme::MUTED));
+        ui.label(RichText::new(format!("{:.0}%", frac * 100.0)).small().color(theme::MUTED));
     });
+}
+
+/// A pill-style tab button with a clear active state + accent underline.
+fn tab_button(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(94.0, 30.0), Sense::click());
+    let painter = ui.painter();
+    let r = CornerRadius::same(7);
+    if active {
+        painter.rect_filled(rect, r, theme::lerp(theme::PANEL, theme::CYAN, 0.16));
+    } else if resp.hovered() {
+        painter.rect_filled(rect, r, theme::CARD);
+    }
+    let col = if active {
+        theme::CYAN
+    } else if resp.hovered() {
+        theme::TEXT
+    } else {
+        theme::MUTED
+    };
+    painter.text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(14.5), col);
+    if active {
+        let bar = Rect::from_min_size(
+            Pos2::new(rect.left() + 16.0, rect.bottom() - 3.0),
+            Vec2::new(rect.width() - 32.0, 2.5),
+        );
+        painter.rect_filled(bar, CornerRadius::same(2), theme::CYAN);
+    }
+    resp.clicked()
+}
+
+/// A subtle top-light / bottom-dark gradient behind tab content, for depth.
+fn paint_backdrop(ui: &egui::Ui) {
+    let rect = ui.max_rect();
+    let painter = ui.painter();
+    let n = 28;
+    for i in 0..n {
+        let t = i as f32 / (n - 1) as f32;
+        let y0 = rect.top() + rect.height() * i as f32 / n as f32;
+        let y1 = rect.top() + rect.height() * (i + 1) as f32 / n as f32;
+        let col = theme::lerp(theme::PANEL, theme::BG, t * 0.55);
+        painter.rect_filled(
+            Rect::from_min_max(Pos2::new(rect.left(), y0), Pos2::new(rect.right(), y1)),
+            0.0,
+            col,
+        );
+    }
+}
+
+/// Accent color for a node by kind.
+fn node_accent(kind: NodeKind) -> Color32 {
+    match kind {
+        NodeKind::Input | NodeKind::Output => theme::MUTED,
+        NodeKind::Vst3 => theme::EMBER,
+        _ => theme::CYAN,
+    }
 }
 
 /// Insert or update a persisted (param id, value) in a VST node's list.
@@ -776,10 +939,27 @@ fn node_label(params: &NodeParams) -> String {
     }
 }
 
-/// Draw a connection wire as a gentle horizontal S-curve (two segments).
-fn wire(painter: &egui::Painter, from: Pos2, to: Pos2) {
-    let mid = Pos2::new((from.x + to.x) * 0.5, (from.y + to.y) * 0.5);
-    let stroke = Stroke::new(2.0, theme::CYAN.gamma_multiply(0.8));
-    painter.line_segment([from, mid], stroke);
-    painter.line_segment([mid, to], stroke);
+/// Draw a connection wire as a smooth horizontal cubic bezier.
+fn wire(painter: &egui::Painter, from: Pos2, to: Pos2, color: Color32) {
+    let dx = ((to.x - from.x).abs() * 0.5).clamp(40.0, 160.0);
+    let c1 = Pos2::new(from.x + dx, from.y);
+    let c2 = Pos2::new(to.x - dx, to.y);
+    let stroke = Stroke::new(2.5, color);
+    let n = 24;
+    let mut prev = from;
+    for i in 1..=n {
+        let t = i as f32 / n as f32;
+        let pt = cubic(from, c1, c2, to, t);
+        painter.line_segment([prev, pt], stroke);
+        prev = pt;
+    }
+}
+
+fn cubic(p0: Pos2, p1: Pos2, p2: Pos2, p3: Pos2, t: f32) -> Pos2 {
+    let u = 1.0 - t;
+    let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+    Pos2::new(
+        a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+        a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+    )
 }

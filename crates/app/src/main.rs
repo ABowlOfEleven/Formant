@@ -80,11 +80,17 @@ fn run_gui() -> anyhow::Result<()> {
     let graph = Graph::default_chain();
     let engine = Engine::start(&config, graph.clone())?;
 
+    let icon = eframe::egui::IconData {
+        rgba: include_bytes!("../icon.rgba").to_vec(),
+        width: 256,
+        height: 256,
+    };
     let native = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([940.0, 660.0])
             .with_min_inner_size([720.0, 480.0])
-            .with_title("Formant"),
+            .with_title("Formant")
+            .with_icon(icon),
         ..Default::default()
     };
 

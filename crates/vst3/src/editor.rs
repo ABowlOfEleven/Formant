@@ -74,6 +74,21 @@ impl PluginEditor {
             .unwrap_or_default()
     }
 
+    /// Format a normalized value as the plugin's own display string, e.g.
+    /// "-3.2 dB" or "2.5 : 1". Empty if the plugin doesn't provide one.
+    pub fn param_string(&self, id: u32, value: f64) -> String {
+        let mut buf: [u16; 128] = [0; 128];
+        // SAFETY: controller is valid; `buf` is a String128.
+        unsafe {
+            if self.controller.getParamStringByValue(id, value, &mut buf as *mut _) == kResultOk {
+                let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                String::from_utf16_lossy(&buf[..n])
+            } else {
+                String::new()
+            }
+        }
+    }
+
     /// Mirror a Formant-side parameter edit into the controller (so the plugin
     /// GUI reflects it).
     pub fn set_param(&self, id: u32, value: f64) {

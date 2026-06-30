@@ -41,6 +41,16 @@ impl Biquad {
         Self::from_coeffs(b0, b1, b2, 1.0 + alpha, -2.0 * cos_w0, 1.0 - alpha)
     }
 
+    /// RBJ low-pass. `q` ~0.707 is Butterworth; ~0.5 gives a Linkwitz-Riley
+    /// crossover that sums flat with the matching high-pass (used by the de-esser).
+    pub fn lowpass(sample_rate: u32, cutoff_hz: f32, q: f32) -> Self {
+        let (_, cos_w0, alpha) = rbj_terms(sample_rate, cutoff_hz, q);
+        let b1 = 1.0 - cos_w0;
+        let b0 = b1 / 2.0;
+        let b2 = b0;
+        Self::from_coeffs(b0, b1, b2, 1.0 + alpha, -2.0 * cos_w0, 1.0 - alpha)
+    }
+
     /// RBJ peaking EQ: `gain_db` boost/cut around `center_hz` with bandwidth `q`.
     pub fn peaking(sample_rate: u32, center_hz: f32, q: f32, gain_db: f32) -> Self {
         let a = 10f32.powf(gain_db / 40.0);

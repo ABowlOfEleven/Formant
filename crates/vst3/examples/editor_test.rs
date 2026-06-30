@@ -14,7 +14,12 @@ fn main() -> anyhow::Result<()> {
     println!("loading {}", plugin.name);
     // Keep the processor half alive (the controller is connected to it).
     let (_inst, mut editor) = formant_vst3::PluginInstance::load(&plugin.binary, 512, 48_000.0)?;
-    println!("{} parameters; opening editor window…", editor.params().len());
+    println!("{} parameters:", editor.params().len());
+    for p in editor.params().iter().take(8) {
+        let plain = editor.param_string(p.id, p.default);
+        println!("  {} = {} (default {:.2})", p.name, plain, p.default);
+    }
+    println!("opening editor window…");
 
     editor.open()?;
     println!("editor open — pumping messages for 2s");
