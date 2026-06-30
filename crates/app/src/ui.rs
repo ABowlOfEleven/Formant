@@ -1,4 +1,4 @@
-//! The themed eframe UI: tabbed Mixer / Nodes / Presets / Settings.
+//! The themed eframe UI: tabbed Mixer / Nodes / Setup, with hover tooltips.
 //!
 //! The Nodes tab is a hand-built drag-wire graph editor (canvas painted with the
 //! `Painter`, interaction via `ui.interact`), with a side inspector for the
@@ -22,8 +22,7 @@ const NODE_SIZE: Vec2 = Vec2::new(170.0, 66.0);
 enum Tab {
     Mixer,
     Nodes,
-    Presets,
-    Settings,
+    Setup,
 }
 
 pub struct FormantApp {
@@ -204,6 +203,36 @@ impl FormantApp {
             .map(|v| v.into_iter().map(|d| d.name).collect())
             .unwrap_or_default();
     }
+
+    /// Export a preset to a user-chosen `.ron` file (to share/back up).
+    fn export_preset(&mut self, preset: &Preset) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(format!("{}.ron", preset.name))
+            .add_filter("Formant preset", &["ron"])
+            .save_file()
+        else {
+            return;
+        };
+        self.status = match preset.to_ron().and_then(|s| Ok(std::fs::write(&path, s)?)) {
+            Ok(_) => format!("exported '{}'", preset.name),
+            Err(e) => format!("export failed: {e}"),
+        };
+    }
+
+    /// Import a `.ron` preset from anywhere into the presets folder.
+    fn import_preset(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("Formant preset", &["ron"]).pick_file() else {
+            return;
+        };
+        match std::fs::read_to_string(&path).ok().and_then(|s| Preset::from_ron(&s).ok()) {
+            Some(p) => {
+                let _ = p.save();
+                self.presets = Preset::load_all();
+                self.status = format!("imported '{}'", p.name);
+            }
+            None => self.status = "import failed (not a valid preset)".into(),
+        }
+    }
 }
 
 impl eframe::App for FormantApp {
@@ -229,8 +258,7 @@ impl eframe::App for FormantApp {
             match self.tab {
                 Tab::Mixer => self.tab_mixer(ui),
                 Tab::Nodes => self.tab_nodes(ui),
-                Tab::Presets => self.tab_presets(ui),
-                Tab::Settings => self.tab_settings(ui),
+                Tab::Setup => self.tab_setup(ui),
             }
         });
 
@@ -254,8 +282,7 @@ impl FormantApp {
                 for (tab, name) in [
                     (Tab::Mixer, "Mixer"),
                     (Tab::Nodes, "Nodes"),
-                    (Tab::Presets, "Presets"),
-                    (Tab::Settings, "Settings"),
+                    (Tab::Setup, "Setup"),
                 ] {
                     if tab_button(ui, name, self.tab == tab) {
                         self.tab = tab;
@@ -268,7 +295,7 @@ impl FormantApp {
                     } else {
                         ("● live", theme::GOOD)
                     };
-                    if ui.button(RichText::new(txt).color(col).strong()).clicked() {
+                    if ui.button(RichText::new(txt).color(col).strong()).on_hover_text("Turn ALL processing off — passes your raw mic straight through.").clicked() {
                         self.engine.controls.toggle_bypass();
                     }
                 });
@@ -289,63 +316,142 @@ impl FormantApp {
             let m = &self.engine.meters;
             (m.in_peak(), m.out_peak(), m.vad(), m.gain_reduction_db())
         };
-        theme::card(ui.style()).show(ui, |ui| {
-            ui.label(RichText::new("METERS").color(theme::CYAN).strong());
-            meter(ui, "input", in_peak);
-            meter(ui, "output", out_peak);
-            meter(ui, "voice (VAD)", vad);
-            meter(ui, "comp GR", (gr / 20.0).clamp(0.0, 1.0));
-        });
 
-        ui.add_space(8.0);
+        // ── Meters + transport ───────────────────────────────────────────
         theme::card(ui.style()).show(ui, |ui| {
-            ui.label(RichText::new("MUTE MODE").color(theme::CYAN).strong());
             ui.horizontal(|ui| {
+                ui.heading(RichText::new("MIXER").color(theme::CYAN));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let bypassed = self.engine.controls.global_bypass();
+                    let (txt, col) = if bypassed { ("● BYPASSED", theme::EMBER) } else { ("● live", theme::GOOD) };
+                    if ui.button(RichText::new(txt).color(col).strong()).on_hover_text("Turn ALL processing off — passes your raw mic straight through.").clicked() {
+                        self.engine.controls.toggle_bypass();
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            meter(ui, "input", in_peak, "Incoming microphone level.");
+            meter(ui, "output", out_peak, "Processed level sent to your monitor and the virtual mic.");
+            meter(ui, "voice (VAD)", vad, "How confident the AI is that you're speaking right now.");
+            meter(ui, "comp GR", (gr / 20.0).clamp(0.0, 1.0), "How much the compressor is currently turning the level down.");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("mute").color(theme::MUTED).small())
+                    .on_hover_text("How the mic decides when to open/close.");
                 let cur = self.engine.controls.mode();
                 for m in [MuteMode::Vad, MuteMode::PushToTalk, MuteMode::Toggle, MuteMode::AlwaysOpen] {
-                    if ui.selectable_label(cur == m, m.label()).clicked() {
+                    if ui.selectable_label(cur == m, m.label()).on_hover_text(mode_help(m)).clicked() {
                         self.engine.controls.set_mode(m);
                     }
                 }
             });
         });
 
+        // ── Preset quick-switch ──────────────────────────────────────────
         ui.add_space(8.0);
         theme::card(ui.style()).show(ui, |ui| {
-            ui.label(RichText::new("CHAIN").color(theme::CYAN).strong());
-            let ids: Vec<NodeId> = self
-                .graph
-                .nodes
-                .iter()
-                .filter(|n| !matches!(n.params.kind(), NodeKind::Input | NodeKind::Output))
-                .map(|n| n.id)
-                .collect();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("PRESETS").color(theme::CYAN).strong());
+                ui.add(egui::TextEdit::singleline(&mut self.new_preset_name).hint_text("name").desired_width(120.0));
+                if ui.button("Save").clicked() && !self.new_preset_name.trim().is_empty() {
+                    let preset = Preset::new(self.new_preset_name.trim(), self.graph.clone());
+                    self.status = match preset.save() {
+                        Ok(_) => format!("saved '{}'", preset.name),
+                        Err(e) => format!("save failed: {e}"),
+                    };
+                    self.new_preset_name.clear();
+                    self.presets = Preset::load_all();
+                }
+            });
+            if self.presets.is_empty() {
+                ui.label(RichText::new("no presets — save one, or import in Setup").color(theme::MUTED).small());
+            }
+            let presets = self.presets.clone();
             ui.horizontal_wrapped(|ui| {
-                for id in ids {
-                    if let Some(n) = self.graph.node(id).cloned() {
-                        let mut on = !n.bypass;
-                        if ui.checkbox(&mut on, node_label(&n.params)).changed() {
-                            if let Some(nm) = self.graph.node_mut(id) {
-                                nm.bypass = !on;
-                            }
-                        }
+                for preset in presets {
+                    if ui.button(&preset.name).clicked() {
+                        self.graph = preset.graph.clone();
+                        self.selected = None;
+                        self.status = format!("loaded '{}'", preset.name);
                     }
                 }
+            });
+        });
+
+        // ── Channel strip (one channel per chain node, in signal order) ──
+        ui.add_space(8.0);
+        theme::card(ui.style()).show(ui, |ui| {
+            ui.label(RichText::new("CHANNEL STRIP").color(theme::CYAN).strong());
+            let ids: Vec<NodeId> = self
+                .graph
+                .exec_path()
+                .into_iter()
+                .filter(|id| !matches!(self.graph.kind_of(*id), Some(NodeKind::Input) | Some(NodeKind::Output)))
+                .collect();
+            if ids.is_empty() {
+                ui.label(RichText::new("empty chain — add nodes in the Nodes tab").color(theme::MUTED).small());
+            }
+            egui::ScrollArea::horizontal().show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    for id in ids {
+                        self.channel(ui, id);
+                    }
+                });
+            });
+        });
+    }
+
+    /// One mixer channel for a chain node: name (→ select in Nodes), enable,
+    /// and its primary parameter.
+    fn channel(&mut self, ui: &mut egui::Ui, id: NodeId) {
+        let Some(node) = self.graph.node(id).cloned() else { return };
+        let accent = node_accent(node.params.kind());
+        theme::card(ui.style()).show(ui, |ui| {
+            ui.set_width(132.0);
+            ui.push_id(id, |ui| {
+                ui.vertical(|ui| {
+                    if ui
+                        .add(egui::Button::new(RichText::new(node_label(&node.params)).color(accent).strong()).frame(false))
+                        .on_hover_text(format!("{}\n\nClick to edit this node in the Nodes tab.", kind_help(node.params.kind())))
+                        .clicked()
+                    {
+                        self.selected = Some(id);
+                        self.tab = Tab::Nodes;
+                    }
+                    let mut on = !node.bypass;
+                    if ui.checkbox(&mut on, "on").changed() {
+                        if let Some(n) = self.graph.node_mut(id) {
+                            n.bypass = !on;
+                        }
+                    }
+                    let mut params = node.params.clone();
+                    if primary_slider(ui, &mut params) {
+                        if let Some(n) = self.graph.node_mut(id) {
+                            n.params = params;
+                        }
+                    }
+                });
             });
         });
     }
 
     fn tab_nodes(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_top(|ui| {
-            let canvas_size = Vec2::new((ui.available_width() - 236.0).max(200.0), ui.available_height());
-            let (canvas, bg) = ui.allocate_exact_size(canvas_size, Sense::click_and_drag());
-            self.draw_canvas(ui, canvas, bg);
-
-            ui.separator();
-            ui.vertical(|ui| {
-                ui.set_width(224.0);
-                self.draw_inspector(ui);
+        // Inspector lives in a resizable right panel (drag its left edge); its
+        // contents scroll so nothing clips.
+        egui::Panel::right("inspector")
+            .resizable(true)
+            .default_size(280.0)
+            .size_range(220.0..=520.0)
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.draw_inspector(ui));
             });
+        // The graph canvas fills whatever space is left.
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            let size = ui.available_size();
+            let (canvas, bg) = ui.allocate_exact_size(size, Sense::click_and_drag());
+            self.draw_canvas(ui, canvas, bg);
         });
     }
 
@@ -430,7 +536,9 @@ impl FormantApp {
             let &(pos, kind, bypass) = layout.get(&id).unwrap();
             let rect = Rect::from_min_size(pos, ns);
 
-            let resp = ui.interact(rect, egui::Id::new(("fmt_node", id)), Sense::click_and_drag());
+            let resp = ui
+                .interact(rect, egui::Id::new(("fmt_node", id)), Sense::click_and_drag())
+                .on_hover_text(kind_help(kind));
             if resp.dragged() {
                 if let Some(n) = self.graph.node_mut(id) {
                     let d = resp.drag_delta() / zoom; // screen -> world
@@ -518,7 +626,7 @@ impl FormantApp {
             ui.label(RichText::new("ADD NODE").color(theme::CYAN).strong());
             ui.horizontal_wrapped(|ui| {
                 for kind in NodeKind::EFFECTS {
-                    if ui.button(kind.label()).clicked() {
+                    if ui.button(kind.label()).on_hover_text(kind_help(kind)).clicked() {
                         let pos = [-self.pan.x + 220.0, -self.pan.y + 220.0];
                         let id = self.graph.add_node(kind.default_params(), pos);
                         self.selected = Some(id);
@@ -587,44 +695,63 @@ impl FormantApp {
 
             match &mut params {
                 NodeParams::HighPass { cutoff_hz } => {
-                    ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("cutoff Hz"));
+                    ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("cutoff Hz"))
+                        .on_hover_text("Frequencies below this are removed. ~80–120 Hz clears rumble without thinning your voice.");
                 }
                 NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate } => {
-                    ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("threshold dB"));
-                    ui.add(egui::Slider::new(range_db, -90.0..=0.0).text("range dB"));
-                    ui.add(egui::Slider::new(attack_ms, 0.1..=50.0).text("attack ms"));
-                    ui.add(egui::Slider::new(hold_ms, 0.0..=500.0).text("hold ms"));
-                    ui.add(egui::Slider::new(release_ms, 5.0..=1000.0).logarithmic(true).text("release ms"));
-                    ui.checkbox(vad_gate, "follow VAD (RNNoise)");
+                    ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("threshold dB"))
+                        .on_hover_text("How loud you must be for the gate to open. Set it just above your background noise.");
+                    ui.add(egui::Slider::new(range_db, -90.0..=0.0).text("range dB"))
+                        .on_hover_text("How much the mic is quieted when closed. More negative = closer to fully silent.");
+                    ui.add(egui::Slider::new(attack_ms, 0.1..=50.0).text("attack ms"))
+                        .on_hover_text("How quickly the gate opens when you start talking.");
+                    ui.add(egui::Slider::new(hold_ms, 0.0..=500.0).text("hold ms"))
+                        .on_hover_text("How long it stays open after you stop, so word endings aren't cut off.");
+                    ui.add(egui::Slider::new(release_ms, 5.0..=1000.0).logarithmic(true).text("release ms"))
+                        .on_hover_text("How slowly the gate closes after the hold — longer is more natural.");
+                    ui.checkbox(vad_gate, "follow VAD (RNNoise)")
+                        .on_hover_text("Open the gate from AI voice detection instead of raw loudness.");
                 }
                 NodeParams::DeEsser { threshold_db, ratio, split_hz } => {
-                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("threshold dB"));
-                    ui.add(egui::Slider::new(ratio, 1.0..=12.0).text("ratio"));
-                    ui.add(egui::Slider::new(split_hz, 3000.0..=12000.0).text("split Hz"));
+                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("threshold dB"))
+                        .on_hover_text("How loud sibilance must be before it's tamed. Lower = more de-essing.");
+                    ui.add(egui::Slider::new(ratio, 1.0..=12.0).text("ratio"))
+                        .on_hover_text("How hard the 'ess' is reduced once over threshold.");
+                    ui.add(egui::Slider::new(split_hz, 3000.0..=12000.0).text("split Hz"))
+                        .on_hover_text("The frequency where 'ess'/'sh' sounds live (try 5–8 kHz). Only this band is touched.");
                 }
                 NodeParams::Compressor { threshold_db, ratio } => {
-                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("threshold dB"));
-                    ui.add(egui::Slider::new(ratio, 1.0..=20.0).text("ratio"));
+                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("threshold dB"))
+                        .on_hover_text("Level above which compression kicks in. Lower = more of your voice gets evened out.");
+                    ui.add(egui::Slider::new(ratio, 1.0..=20.0).text("ratio"))
+                        .on_hover_text("How hard loud parts are turned down. 3:1 means 3 dB over → 1 dB out.");
                 }
                 NodeParams::Eq { low_db, mid_db, high_db } => {
-                    ui.add(egui::Slider::new(low_db, -12.0..=12.0).text("low dB"));
-                    ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid dB"));
-                    ui.add(egui::Slider::new(high_db, -12.0..=12.0).text("high dB"));
+                    ui.add(egui::Slider::new(low_db, -12.0..=12.0).text("low dB"))
+                        .on_hover_text("Boost (+) or cut (–) the low end / warmth (~120 Hz).");
+                    ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid dB"))
+                        .on_hover_text("Boost (+) or cut (–) the mids / presence (~3 kHz).");
+                    ui.add(egui::Slider::new(high_db, -12.0..=12.0).text("high dB"))
+                        .on_hover_text("Boost (+) or cut (–) the highs / air (~10 kHz).");
                 }
                 NodeParams::Saturator { drive, mix } => {
-                    ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive"));
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"));
+                    ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive"))
+                        .on_hover_text("How hard the signal is pushed — more = warmer, then grittier.");
+                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
+                        .on_hover_text("Blend between clean (0) and saturated (1).");
                 }
                 NodeParams::Limiter { ceiling_db } => {
-                    ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceiling dB"));
+                    ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceiling dB"))
+                        .on_hover_text("Maximum output level — nothing gets louder than this.");
                 }
                 NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } => {
-                    ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("gain dB"));
+                    ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("gain dB"))
+                        .on_hover_text("Volume adjustment in decibels (+ louder, – quieter).");
                 }
                 NodeParams::Vst3 { name, params: stored, .. } => {
                     ui.label(RichText::new(name.as_str()).color(theme::MUTED));
                     if self.editors.contains_key(&id)
-                        && ui.button(RichText::new("Open plugin editor").color(theme::CYAN)).clicked()
+                        && ui.button(RichText::new("Open plugin editor").color(theme::CYAN)).on_hover_text("Open the plugin's own window with all its native controls.").clicked()
                     {
                         if let Some(ed) = self.editors.get_mut(&id) {
                             if let Err(e) = ed.open() {
@@ -697,61 +824,65 @@ impl FormantApp {
         }
     }
 
-    fn tab_presets(&mut self, ui: &mut egui::Ui) {
-        theme::card(ui.style()).show(ui, |ui| {
-            ui.label(RichText::new("SAVE CURRENT GRAPH").color(theme::CYAN).strong());
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.new_preset_name).hint_text("preset name"));
-                if ui.button("Save").clicked() && !self.new_preset_name.trim().is_empty() {
-                    let preset = Preset::new(self.new_preset_name.trim(), self.graph.clone());
-                    match preset.save() {
-                        Ok(_) => {
-                            self.status = format!("saved '{}'", preset.name);
-                            self.new_preset_name.clear();
-                            self.presets = Preset::load_all();
-                        }
-                        Err(e) => self.status = format!("save failed: {e}"),
-                    }
-                }
-            });
-        });
-
-        ui.add_space(8.0);
-        theme::card(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("PRESET CHAINS").color(theme::CYAN).strong());
-                if ui.button("Refresh").clicked() {
-                    self.presets = Preset::load_all();
-                }
-            });
-            if self.presets.is_empty() {
-                ui.label(RichText::new("no presets yet").color(theme::MUTED).small());
-            }
-            let mut to_delete: Option<usize> = None;
-            for (i, preset) in self.presets.clone().into_iter().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.label(&preset.name);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Delete").clicked() {
-                            let _ = preset.delete();
-                            to_delete = Some(i);
-                        }
-                        if ui.button("Load").clicked() {
-                            self.graph = preset.graph.clone();
-                            self.selected = None;
-                            self.status = format!("loaded '{}'", preset.name);
-                        }
-                    });
-                });
-            }
-            if let Some(i) = to_delete {
-                self.presets.remove(i);
-            }
-        });
-    }
-
-    fn tab_settings(&mut self, ui: &mut egui::Ui) {
+    fn tab_setup(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
+            // ── Presets ──────────────────────────────────────────────────
+            theme::card(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("PRESETS").color(theme::CYAN).strong());
+                    if ui.button("Refresh").clicked() {
+                        self.presets = Preset::load_all();
+                    }
+                    if ui.button("Import…").on_hover_text("Load a .ron preset file from anywhere into your library.").clicked() {
+                        self.import_preset();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.new_preset_name).hint_text("save current as…"));
+                    if ui.button("Save").clicked() && !self.new_preset_name.trim().is_empty() {
+                        let preset = Preset::new(self.new_preset_name.trim(), self.graph.clone());
+                        self.status = match preset.save() {
+                            Ok(_) => format!("saved '{}'", preset.name),
+                            Err(e) => format!("save failed: {e}"),
+                        };
+                        self.new_preset_name.clear();
+                        self.presets = Preset::load_all();
+                    }
+                });
+                if self.presets.is_empty() {
+                    ui.label(RichText::new("no presets yet").color(theme::MUTED).small());
+                }
+                let mut to_delete: Option<usize> = None;
+                let mut to_export: Option<usize> = None;
+                for (i, preset) in self.presets.clone().into_iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(&preset.name);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Delete").clicked() {
+                                let _ = preset.delete();
+                                to_delete = Some(i);
+                            }
+                            if ui.button("Export…").on_hover_text("Save this preset to a .ron file to share or back up.").clicked() {
+                                to_export = Some(i);
+                            }
+                            if ui.button("Load").clicked() {
+                                self.graph = preset.graph.clone();
+                                self.selected = None;
+                                self.status = format!("loaded '{}'", preset.name);
+                            }
+                        });
+                    });
+                }
+                if let Some(i) = to_export {
+                    let p = self.presets[i].clone();
+                    self.export_preset(&p);
+                }
+                if let Some(i) = to_delete {
+                    self.presets.remove(i);
+                }
+            });
+
+            ui.add_space(8.0);
             theme::card(ui.style()).show(ui, |ui| {
                 ui.label(RichText::new("DEVICES (name match)").color(theme::CYAN).strong());
                 ui.label(RichText::new(format!("mic now: {}", self.engine.mic_name)).color(theme::MUTED).small());
@@ -839,12 +970,14 @@ impl FormantApp {
 }
 
 /// A segmented LED-style level meter (cyan at low, ember toward the top).
-fn meter(ui: &mut egui::Ui, label: &str, frac: f32) {
+fn meter(ui: &mut egui::Ui, label: &str, frac: f32, help: &str) {
     let frac = frac.clamp(0.0, 1.0);
     ui.horizontal(|ui| {
-        ui.add_sized([92.0, 16.0], egui::Label::new(RichText::new(label).color(theme::MUTED).small()));
+        ui.add_sized([92.0, 16.0], egui::Label::new(RichText::new(label).color(theme::MUTED).small()))
+            .on_hover_text(help);
         let segs = 26usize;
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(228.0, 15.0), Sense::hover());
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(228.0, 15.0), Sense::hover());
+        resp.on_hover_text(help);
         let painter = ui.painter();
         painter.rect_filled(rect, CornerRadius::same(4), theme::BG);
         let gap = 2.0;
@@ -910,6 +1043,57 @@ fn paint_backdrop(ui: &egui::Ui) {
             0.0,
             col,
         );
+    }
+}
+
+/// Render a node's primary parameter as a compact slider (mixer channel).
+/// Returns true if it changed.
+fn primary_slider(ui: &mut egui::Ui, params: &mut NodeParams) -> bool {
+    let resp = match params {
+        NodeParams::HighPass { cutoff_hz } => Some(ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("Hz")).on_hover_text("Cutoff — frequencies below this are removed.")),
+        NodeParams::Gate { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("thr")).on_hover_text("Gate threshold — how loud you must be to open the mic.")),
+        NodeParams::DeEsser { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr")).on_hover_text("De-ess threshold — lower tames more sibilance.")),
+        NodeParams::Compressor { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr")).on_hover_text("Compressor threshold — lower evens out more of your voice.")),
+        NodeParams::Eq { mid_db, .. } => Some(ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid")).on_hover_text("Mid boost/cut (presence).")),
+        NodeParams::Saturator { drive, .. } => Some(ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive")).on_hover_text("Saturation drive — more = warmer/grittier.")),
+        NodeParams::Limiter { ceiling_db } => Some(ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceil")).on_hover_text("Output ceiling — nothing gets louder than this.")),
+        NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } => {
+            Some(ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("dB")).on_hover_text("Volume in decibels."))
+        }
+        _ => {
+            ui.label(RichText::new("—").color(theme::MUTED).small());
+            None
+        }
+    };
+    resp.map(|r| r.changed()).unwrap_or(false)
+}
+
+/// Plain-language explanation of what each node does (hover tooltip).
+fn kind_help(kind: NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Input => "Your microphone — the start of the chain.",
+        NodeKind::Output => "The processed signal sent to your monitor and the virtual mic apps use.",
+        NodeKind::HighPass => "Removes low-frequency rumble (handling noise, thumps, AC hum) below the cutoff. Almost always worth having first.",
+        NodeKind::Denoise => "AI noise reduction (RNNoise): removes steady background noise — fans, hiss, room tone — while keeping your voice.",
+        NodeKind::Gate => "Silences the mic when you're not talking, so background noise doesn't leak through between words.",
+        NodeKind::DeEsser => "Tames harsh 'sss' and 'shh' sounds (sibilance) without dulling the rest of your voice.",
+        NodeKind::Compressor => "Evens out your volume — brings quiet parts up and loud parts down — for a steadier, fuller, more 'pro' sound.",
+        NodeKind::Eq => "Tone control: boost or cut lows, mids, and highs to shape your voice.",
+        NodeKind::Saturator => "Adds warmth and subtle harmonics like analog gear — gentle at low drive, gritty at high.",
+        NodeKind::Limiter => "A safety ceiling: stops the output from ever getting too loud or clipping. Good as the last node.",
+        NodeKind::Gain => "Simple volume trim — boost or cut the level at this point in the chain.",
+        NodeKind::Makeup => "Final output volume — bring the processed signal back up to the level you want.",
+        NodeKind::Vst3 => "A third-party VST3 plugin added to your chain. Open its editor for its own controls.",
+    }
+}
+
+/// Plain-language explanation of each mute mode (hover tooltip).
+fn mode_help(mode: MuteMode) -> &'static str {
+    match mode {
+        MuteMode::Vad => "Open the mic automatically when you talk, using AI voice detection. Hands-free.",
+        MuteMode::PushToTalk => "Mic is open only while you hold the push-to-talk key (set it in Setup → Hotkeys).",
+        MuteMode::Toggle => "Press the toggle key to mute/unmute (set it in Setup → Hotkeys).",
+        MuteMode::AlwaysOpen => "Mic is always open — no gating at all.",
     }
 }
 

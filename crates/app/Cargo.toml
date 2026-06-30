@@ -16,6 +16,7 @@ formant-vst3.workspace = true
 anyhow.workspace = true
 ctrlc.workspace = true
 eframe.workspace = true
+rfd = { version = "0.15", default-features = false }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
