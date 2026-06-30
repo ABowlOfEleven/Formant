@@ -142,3 +142,8 @@ Copyright (C) 2026 Ethan Belanger.
 It is GPLv3 because it hosts VST3 plugins through Steinberg's interface
 definitions, which are themselves available under GPLv3 (or a separate Steinberg
 commercial license).
+
+Formant builds on open-source work by others, including RNNoise for noise
+reduction and egui for the interface. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
+for credits. VST is a trademark of Steinberg Media Technologies GmbH; Formant is
+an independent project and is not affiliated with Steinberg.
