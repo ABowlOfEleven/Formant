@@ -19,6 +19,9 @@ foreach ($f in 'crates/app/icon.ico', 'README.md', 'SPEC.md', 'LICENSE') {
     $p = Join-Path $repo $f
     if (Test-Path $p) { Copy-Item $p $staging -Force }
 }
+# Bundle the docs folder so the README's screenshots resolve in the zip too.
+$docs = Join-Path $repo 'docs'
+if (Test-Path $docs) { Copy-Item $docs $staging -Recurse -Force }
 Remove-Item -Force $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path "$staging/*" -DestinationPath $zip
 Write-Host "Wrote $zip ($([math]::Round((Get-Item $zip).Length/1MB,1)) MB)" -ForegroundColor Green

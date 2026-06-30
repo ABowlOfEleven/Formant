@@ -10,6 +10,11 @@ a second mic.
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0a7bbb)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)
 
+![The Formant node editor, showing the Parallel Vibe preset](docs/nodes.png)
+
+*The node editor with the Parallel Vibe preset loaded: the cleaned voice splits
+into dry, compressed, and saturated paths, then recombines through a Mix node.*
+
 ## Why it exists
 
 Voicemod is a lot of software for what most people actually use it for: a clean
@@ -36,9 +41,12 @@ microphone at the cable and you are finished.
 
 ## What you get
 
+![The Formant mixer, with meters, presets, and the channel strip](docs/mixer.png)
+
 **The chain.** High-pass, RNNoise denoise, gate, de-esser, compressor, 3-band EQ,
 saturator, limiter, and gain. Enough to take a raw mic to a finished voice, with
-bypass on every node and a global bypass for quick before-and-after.
+bypass on every node and a global bypass for quick before-and-after. The Mixer
+tab lays the chain out as a channel strip with live meters.
 
 **A real node editor.** Pan, zoom, and wire it however you like. A Mix node sums
 its inputs and any output can fan out, so you can build parallel compression,

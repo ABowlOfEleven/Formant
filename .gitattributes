@@ -3,3 +3,4 @@
 *.ps1 text eol=crlf
 *.ico binary
 *.rgba binary
+*.png binary
