@@ -4,7 +4,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod engine;
+mod platform;
 mod theme;
+mod tray;
 mod ui;
 mod vst;
 
@@ -74,10 +76,15 @@ fn run_vst_test(name: &str, secs: u64) -> anyhow::Result<()> {
 }
 
 fn run_gui() -> anyhow::Result<()> {
+    if !platform::is_first_instance() {
+        eprintln!("Formant is already running.");
+        return Ok(());
+    }
     // COM for this (UI) thread — STA so it coexists with winit's OleInitialize.
     let com = ComGuard::new_sta()?;
     let config = Config::load_or_default();
-    let graph = Graph::default_chain();
+    // Restore the last session's graph, or start from the default chain.
+    let graph = formant_core::session::load().unwrap_or_else(Graph::default_chain);
     let engine = Engine::start(&config, graph.clone())?;
 
     let icon = eframe::egui::IconData {

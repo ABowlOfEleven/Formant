@@ -48,6 +48,11 @@ pub struct FormantApp {
     installed_vsts: HashSet<NodeId>,
     node_params: HashMap<NodeId, Vec<VstParam>>,
     editors: HashMap<NodeId, formant_vst3::PluginEditor>,
+    // Tray + session.
+    tray: Option<crate::tray::Tray>,
+    quitting: bool,
+    session_dirty: bool,
+    last_session_save: std::time::Instant,
 }
 
 /// A VST node parameter as shown in the inspector (normalized value).
@@ -80,6 +85,10 @@ impl FormantApp {
             installed_vsts: HashSet::new(),
             node_params: HashMap::new(),
             editors: HashMap::new(),
+            tray: crate::tray::build(),
+            quitting: false,
+            session_dirty: false,
+            last_session_save: std::time::Instant::now(),
         }
     }
 
@@ -238,6 +247,33 @@ impl FormantApp {
 impl eframe::App for FormantApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.ctx().request_repaint(); // live meters
+        let ctx = ui.ctx().clone();
+
+        // Tray actions.
+        for action in crate::tray::poll() {
+            match action {
+                crate::tray::TrayAction::Show => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                crate::tray::TrayAction::ToggleBypass => {
+                    self.engine.controls.toggle_bypass();
+                }
+                crate::tray::TrayAction::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        // Closing the window hides to the tray instead of quitting.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+            if self.tray.is_some() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            } else {
+                self.quitting = true;
+            }
+        }
 
         if let Some(action) = self.rebinding {
             if let Some(vk) = hotkeys::first_pressed_key() {
@@ -265,9 +301,24 @@ impl eframe::App for FormantApp {
         if self.graph != self.last_pushed {
             self.engine.push_graph(&self.graph);
             self.last_pushed = self.graph.clone();
+            self.session_dirty = true;
         }
         self.reconcile_vsts();
         self.drain_gui_edits();
+
+        // Persist the working graph as the session, throttled.
+        if self.session_dirty && self.last_session_save.elapsed().as_secs_f32() > 1.5 {
+            let _ = formant_core::session::save(&self.graph);
+            self.session_dirty = false;
+            self.last_session_save = std::time::Instant::now();
+        }
+    }
+}
+
+impl Drop for FormantApp {
+    fn drop(&mut self) {
+        // Save the final session graph on exit.
+        let _ = formant_core::session::save(&self.graph);
     }
 }
 
@@ -959,6 +1010,28 @@ impl FormantApp {
                         }
                     });
                 }
+            });
+
+            ui.add_space(8.0);
+            theme::card(ui.style()).show(ui, |ui| {
+                ui.label(RichText::new("STARTUP").color(theme::CYAN).strong());
+                let mut autostart = crate::platform::autostart_enabled();
+                if ui
+                    .checkbox(&mut autostart, "Start Formant when Windows starts")
+                    .on_hover_text("Launch Formant automatically at login, so your processed mic is always ready.")
+                    .changed()
+                {
+                    self.status = match crate::platform::set_autostart(autostart) {
+                        Ok(_) if autostart => "autostart enabled".into(),
+                        Ok(_) => "autostart disabled".into(),
+                        Err(e) => format!("autostart failed: {e}"),
+                    };
+                }
+                ui.label(
+                    RichText::new("Closing the window hides Formant to the system tray; use the tray icon (or Quit) to bring it back.")
+                        .color(theme::MUTED)
+                        .small(),
+                );
             });
 
             if !self.status.is_empty() {

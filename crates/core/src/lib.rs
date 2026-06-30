@@ -13,6 +13,7 @@ pub mod graph;
 pub mod presets;
 pub mod resample;
 pub mod router;
+pub mod session;
 pub mod shared;
 pub mod types;
 
