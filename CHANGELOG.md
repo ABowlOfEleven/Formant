@@ -3,7 +3,10 @@
 All notable changes to Formant are recorded here. The format is based on Keep a
 Changelog, and the project follows semantic versioning.
 
-## [Unreleased]
+## [0.3.0]
+
+Pitch and correction. Existing presets, sessions, and config keep working: the
+new fields default cleanly when an older file is loaded.
 
 ### Added
 
@@ -134,5 +137,6 @@ First public release.
 - Two factory presets shipped on first run: Standard Vocal and Parallel Vibe.
 - A per-user script installer, a portable zip, and an MSI installer.
 
+[0.3.0]: https://github.com/ABowlOfEleven/Formant/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ABowlOfEleven/Formant/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ABowlOfEleven/Formant/releases/tag/v0.1.0
