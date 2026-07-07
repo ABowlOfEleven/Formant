@@ -3,6 +3,7 @@
 //! Each node is a small, allocation-free struct with a hot `process` path so it
 //! can run on the real-time audio thread without locking or allocating.
 
+pub mod autotune;
 pub mod biquad;
 pub mod chorus;
 pub mod compressor;
@@ -14,9 +15,11 @@ pub mod gate;
 pub mod limiter;
 pub mod loudness;
 pub mod pitch;
+pub mod pitch_detect;
 pub mod reverb;
 pub mod saturator;
 
+pub use autotune::{Autotune, Scale};
 pub use biquad::Biquad;
 pub use chorus::Chorus;
 pub use compressor::Compressor;
@@ -28,6 +31,7 @@ pub use gate::Gate;
 pub use limiter::Limiter;
 pub use loudness::Loudness;
 pub use pitch::PitchShifter;
+pub use pitch_detect::PitchDetector;
 pub use reverb::Reverb;
 pub use saturator::Saturator;
 

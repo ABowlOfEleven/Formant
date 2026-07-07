@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::dsp::{
-    Biquad, Chorus, Compressor, DeEsser, Delay, Denoise, Eq, Gate, Limiter, PitchShifter, Reverb,
-    Saturator,
+    Autotune, Biquad, Chorus, Compressor, DeEsser, Delay, Denoise, Eq, Gate, Limiter, PitchShifter,
+    Reverb, Saturator, Scale,
 };
 use crate::engine::GateOverride;
 use crate::types::Sample;
@@ -32,6 +32,11 @@ const VAD_OPEN: f32 = 0.35;
 /// Default gate lookahead in ms (also the value older presets get on load).
 fn default_gate_lookahead() -> f32 {
     12.0
+}
+
+/// Default wet mix for effects that older presets predate (fully wet).
+fn default_full_mix() -> f32 {
+    1.0
 }
 
 /// A processor for a `Vst3` node, supplied by the host app (which owns the
@@ -55,6 +60,7 @@ pub enum NodeKind {
     Eq,
     Saturator,
     Pitch,
+    Autotune,
     Reverb,
     Delay,
     Chorus,
@@ -67,7 +73,7 @@ pub enum NodeKind {
 
 impl NodeKind {
     /// Effect kinds the user can add (Input/Output are fixed).
-    pub const EFFECTS: [NodeKind; 15] = [
+    pub const EFFECTS: [NodeKind; 16] = [
         NodeKind::HighPass,
         NodeKind::Denoise,
         NodeKind::Gate,
@@ -76,6 +82,7 @@ impl NodeKind {
         NodeKind::Eq,
         NodeKind::Saturator,
         NodeKind::Pitch,
+        NodeKind::Autotune,
         NodeKind::Reverb,
         NodeKind::Delay,
         NodeKind::Chorus,
@@ -97,6 +104,7 @@ impl NodeKind {
             NodeKind::Eq => "EQ",
             NodeKind::Saturator => "Saturator",
             NodeKind::Pitch => "Pitch",
+            NodeKind::Autotune => "Autotune",
             NodeKind::Reverb => "Reverb",
             NodeKind::Delay => "Delay",
             NodeKind::Chorus => "Chorus",
@@ -131,7 +139,20 @@ impl NodeKind {
             NodeKind::Compressor => NodeParams::Compressor { threshold_db: -18.0, ratio: 3.0 },
             NodeKind::Eq => NodeParams::Eq { low_db: 0.0, mid_db: 0.0, high_db: 0.0 },
             NodeKind::Saturator => NodeParams::Saturator { drive: 2.0, mix: 0.3 },
-            NodeKind::Pitch => NodeParams::Pitch { pitch_semitones: 0.0, formant_semitones: 0.0 },
+            NodeKind::Pitch => NodeParams::Pitch {
+                pitch_semitones: 0.0,
+                formant_semitones: 0.0,
+                mix: 1.0,
+                preserve_formants: true,
+            },
+            NodeKind::Autotune => NodeParams::Autotune {
+                key: 0,
+                scale: Scale::Major,
+                strength: 0.9,
+                speed_ms: 40.0,
+                preserve_formants: true,
+                ref_a: 440.0,
+            },
             NodeKind::Reverb => NodeParams::Reverb { room_size: 0.5, damping: 0.5, mix: 0.25 },
             NodeKind::Delay => NodeParams::Delay { time_ms: 250.0, feedback: 0.3, mix: 0.3 },
             NodeKind::Chorus => NodeParams::Chorus { depth_ms: 6.0, rate_hz: 1.2, mix: 0.4 },
@@ -171,7 +192,23 @@ pub enum NodeParams {
     Compressor { threshold_db: f32, ratio: f32 },
     Eq { low_db: f32, mid_db: f32, high_db: f32 },
     Saturator { drive: f32, mix: f32 },
-    Pitch { pitch_semitones: f32, formant_semitones: f32 },
+    Pitch {
+        pitch_semitones: f32,
+        formant_semitones: f32,
+        #[serde(default = "default_full_mix")]
+        mix: f32,
+        #[serde(default)]
+        preserve_formants: bool,
+    },
+    Autotune {
+        /// Key root, 0 = C.
+        key: u8,
+        scale: Scale,
+        strength: f32,
+        speed_ms: f32,
+        preserve_formants: bool,
+        ref_a: f32,
+    },
     Reverb { room_size: f32, damping: f32, mix: f32 },
     Delay { time_ms: f32, feedback: f32, mix: f32 },
     Chorus { depth_ms: f32, rate_hz: f32, mix: f32 },
@@ -198,6 +235,7 @@ impl NodeParams {
             NodeParams::Eq { .. } => NodeKind::Eq,
             NodeParams::Saturator { .. } => NodeKind::Saturator,
             NodeParams::Pitch { .. } => NodeKind::Pitch,
+            NodeParams::Autotune { .. } => NodeKind::Autotune,
             NodeParams::Reverb { .. } => NodeKind::Reverb,
             NodeParams::Delay { .. } => NodeKind::Delay,
             NodeParams::Chorus { .. } => NodeKind::Chorus,
@@ -486,6 +524,7 @@ enum NodeProc {
     Eq(Eq),
     Saturator(Saturator),
     Pitch(Box<PitchShifter>),
+    Autotune(Box<Autotune>),
     Reverb(Reverb),
     Delay(Delay),
     Chorus(Chorus),
@@ -524,8 +563,25 @@ impl NodeProc {
                 NodeProc::Eq(Eq::new(SAMPLE_RATE, low_db, mid_db, high_db))
             }
             NodeParams::Saturator { drive, mix } => NodeProc::Saturator(Saturator::new(drive, mix)),
-            NodeParams::Pitch { pitch_semitones, formant_semitones } => {
-                NodeProc::Pitch(Box::new(PitchShifter::new(SAMPLE_RATE, pitch_semitones, formant_semitones)))
+            NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants } => {
+                NodeProc::Pitch(Box::new(PitchShifter::new(
+                    SAMPLE_RATE,
+                    pitch_semitones,
+                    formant_semitones,
+                    mix,
+                    preserve_formants,
+                )))
+            }
+            NodeParams::Autotune { key, scale, strength, speed_ms, preserve_formants, ref_a } => {
+                NodeProc::Autotune(Box::new(Autotune::new(
+                    SAMPLE_RATE,
+                    key,
+                    scale,
+                    strength,
+                    speed_ms,
+                    preserve_formants,
+                    ref_a,
+                )))
             }
             NodeParams::Reverb { room_size, damping, mix } => {
                 NodeProc::Reverb(Reverb::new(SAMPLE_RATE, room_size, damping, mix))
@@ -556,6 +612,7 @@ impl NodeProc {
             NodeProc::Eq(_) => NodeKind::Eq,
             NodeProc::Saturator(_) => NodeKind::Saturator,
             NodeProc::Pitch(_) => NodeKind::Pitch,
+            NodeProc::Autotune(_) => NodeKind::Autotune,
             NodeProc::Reverb(_) => NodeKind::Reverb,
             NodeProc::Delay(_) => NodeKind::Delay,
             NodeProc::Chorus(_) => NodeKind::Chorus,
@@ -592,8 +649,11 @@ impl NodeProc {
             (NodeProc::Saturator(s), NodeParams::Saturator { drive, mix }) => {
                 s.configure(*drive, *mix);
             }
-            (NodeProc::Pitch(p), NodeParams::Pitch { pitch_semitones, formant_semitones }) => {
-                p.configure(*pitch_semitones, *formant_semitones);
+            (NodeProc::Pitch(p), NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants }) => {
+                p.configure(*pitch_semitones, *formant_semitones, *mix, *preserve_formants);
+            }
+            (NodeProc::Autotune(a), NodeParams::Autotune { key, scale, strength, speed_ms, preserve_formants, ref_a }) => {
+                a.configure(*key, *scale, *strength, *speed_ms, *preserve_formants, *ref_a);
             }
             (NodeProc::Reverb(r), NodeParams::Reverb { room_size, damping, mix }) => {
                 r.configure(*room_size, *damping, *mix);
@@ -680,6 +740,11 @@ impl NodeProc {
             NodeProc::Pitch(p) => {
                 for (o, &x) in output.iter_mut().zip(input) {
                     *o = p.process(x);
+                }
+            }
+            NodeProc::Autotune(a) => {
+                for (o, &x) in output.iter_mut().zip(input) {
+                    *o = a.process(x);
                 }
             }
             NodeProc::Reverb(r) => {

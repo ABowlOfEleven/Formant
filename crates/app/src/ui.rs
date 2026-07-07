@@ -1238,11 +1238,43 @@ impl FormantApp {
                     ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
                         .on_hover_text("Blend between clean (0) and saturated (1).");
                 }
-                NodeParams::Pitch { pitch_semitones, formant_semitones } => {
+                NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants } => {
                     ui.add(egui::Slider::new(pitch_semitones, -12.0..=12.0).text("pitch"))
-                        .on_hover_text("Shift your pitch up or down in semitones (12 = one octave). Higher is chipmunk, lower is deep.");
+                        .on_hover_text("Shift your pitch up or down in semitones (12 = one octave).");
+                    ui.checkbox(preserve_formants, "preserve formants")
+                        .on_hover_text("Keep your natural vocal character when shifting pitch (no chipmunk). Turn off for the classic sped-up/slowed-down sound.");
                     ui.add(egui::Slider::new(formant_semitones, -12.0..=12.0).text("formant"))
-                        .on_hover_text("Shift the vocal-tract character without changing pitch. Up sounds smaller/younger, down sounds bigger.");
+                        .on_hover_text("Shift the vocal-tract character on its own. Up sounds smaller/younger, down sounds bigger.");
+                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
+                        .on_hover_text("Blend between your dry voice (0) and the shifted voice (1). Use less than 1 to layer a harmony under your voice.");
+                }
+                NodeParams::Autotune { key, scale, strength, speed_ms, preserve_formants, ref_a } => {
+                    use formant_core::dsp::autotune::NOTE_NAMES;
+                    ui.horizontal(|ui| {
+                        ui.label("key");
+                        egui::ComboBox::from_id_salt("at-key")
+                            .selected_text(NOTE_NAMES[(*key as usize) % 12])
+                            .show_ui(ui, |ui| {
+                                for (i, name) in NOTE_NAMES.iter().enumerate() {
+                                    ui.selectable_value(key, i as u8, *name);
+                                }
+                            });
+                        egui::ComboBox::from_id_salt("at-scale")
+                            .selected_text(scale.label())
+                            .show_ui(ui, |ui| {
+                                for s in formant_core::dsp::Scale::ALL {
+                                    ui.selectable_value(scale, s, s.label());
+                                }
+                            });
+                    });
+                    ui.add(egui::Slider::new(strength, 0.0..=1.0).text("strength"))
+                        .on_hover_text("How hard notes are pulled to the scale. 1.0 is a full snap (the hard robotic sound); lower is gentle correction.");
+                    ui.add(egui::Slider::new(speed_ms, 1.0..=300.0).logarithmic(true).text("speed ms"))
+                        .on_hover_text("How fast the pitch glides to the target. Fast (a few ms) is the classic autotune effect; slow (100+ ms) sounds natural.");
+                    ui.checkbox(preserve_formants, "preserve formants")
+                        .on_hover_text("Keep your natural vocal character while correcting pitch.");
+                    ui.add(egui::Slider::new(ref_a, 430.0..=450.0).text("reference A"))
+                        .on_hover_text("Tuning reference for A4 (default 440 Hz).");
                 }
                 NodeParams::Reverb { room_size, damping, mix } => {
                     ui.add(egui::Slider::new(room_size, 0.0..=1.0).text("room"))
@@ -1683,6 +1715,7 @@ fn primary_slider(ui: &mut egui::Ui, params: &mut NodeParams) -> bool {
         NodeParams::Eq { mid_db, .. } => Some(ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid")).on_hover_text("Mid boost/cut (presence).")),
         NodeParams::Saturator { drive, .. } => Some(ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive")).on_hover_text("Saturation drive - more = warmer/grittier.")),
         NodeParams::Pitch { pitch_semitones, .. } => Some(ui.add(egui::Slider::new(pitch_semitones, -12.0..=12.0).text("st")).on_hover_text("Pitch shift in semitones.")),
+        NodeParams::Autotune { strength, .. } => Some(ui.add(egui::Slider::new(strength, 0.0..=1.0).text("amt")).on_hover_text("Autotune strength.")),
         NodeParams::Reverb { mix, .. } | NodeParams::Delay { mix, .. } | NodeParams::Chorus { mix, .. } => Some(ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix")).on_hover_text("Dry/wet blend.")),
         NodeParams::Limiter { ceiling_db } => Some(ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceil")).on_hover_text("Output ceiling - nothing gets louder than this.")),
         NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } | NodeParams::Mix { gain_db } => {
@@ -1708,7 +1741,8 @@ fn kind_help(kind: NodeKind) -> &'static str {
         NodeKind::Compressor => "Evens out your volume - brings quiet parts up and loud parts down - for a steadier, fuller, more 'pro' sound.",
         NodeKind::Eq => "Tone control: boost or cut lows, mids, and highs to shape your voice.",
         NodeKind::Saturator => "Adds warmth and subtle harmonics like analog gear - gentle at low drive, gritty at high.",
-        NodeKind::Pitch => "Shifts your pitch and/or formants in real time. Pitch makes you higher or lower; formant changes the apparent size of your voice without changing pitch. Adds a little latency.",
+        NodeKind::Pitch => "Shifts your pitch and/or formants in real time. Pitch makes you higher or lower; formant changes the apparent size of your voice without changing pitch. Turn on preserve formants for a natural shift. Adds a little latency.",
+        NodeKind::Autotune => "Real-time pitch correction: detects the note you're singing and pulls it to the nearest note in a key/scale. Set the key and scale, then dial strength (how hard) and speed (fast for the robotic effect, slow for natural).",
         NodeKind::Reverb => "Adds the sense of a room or space around your voice. Subtle amounts add depth; large amounts sound cavernous.",
         NodeKind::Delay => "An echo. Short times thicken, longer times repeat. Feedback controls how many repeats.",
         NodeKind::Chorus => "Thickens and widens your voice by mixing in a slightly detuned, wobbling copy.",

@@ -5,6 +5,20 @@ Changelog, and the project follows semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Autotune node: real-time pitch correction that detects the sung note and snaps
+  it to the nearest note in a key and scale. Full controls: key, scale
+  (chromatic, major, minor, and both pentatonics), strength, retune speed (fast
+  for the robotic effect, slow for natural), formant preservation, and a tuning
+  reference. It reuses the phase vocoder and a YIN pitch detector.
+
+### Changed
+
+- The Pitch node feels better: a preserve-formants toggle for natural pitch
+  shifts without the chipmunk effect (on by default for new nodes), and a dry/wet
+  mix so you can layer a shifted harmony under your voice.
+
 ### Fixed
 
 - The noise gate no longer swallows the start of sentences in voice-activity

@@ -32,9 +32,16 @@ const TWO_PI: f32 = std::f32::consts::TAU;
 pub struct PitchShifter {
     pitch: f32,
     formant: f32,
+    /// Effective formant ratio actually applied (folds in preservation).
+    formant_eff: f32,
+    preserve: bool,
+    mix: f32,
     freq_per_bin: f32,
     expct: f32,
     scale: f32,
+    /// Dry delay ring (one frame) to time-align the dry path with the wet.
+    dry: Vec<f32>,
+    dry_pos: usize,
 
     r2c: Arc<dyn RealToComplex<f32>>,
     c2r: Arc<dyn ComplexToReal<f32>>,
@@ -61,7 +68,13 @@ pub struct PitchShifter {
 }
 
 impl PitchShifter {
-    pub fn new(sample_rate: u32, pitch_semitones: f32, formant_semitones: f32) -> Self {
+    pub fn new(
+        sample_rate: u32,
+        pitch_semitones: f32,
+        formant_semitones: f32,
+        mix: f32,
+        preserve_formants: bool,
+    ) -> Self {
         let mut planner = RealFftPlanner::<f32>::new();
         let r2c = planner.plan_fft_forward(FRAME);
         let c2r = planner.plan_fft_inverse(FRAME);
@@ -75,6 +88,11 @@ impl PitchShifter {
         Self {
             pitch: semitones_to_ratio(pitch_semitones),
             formant: semitones_to_ratio(formant_semitones),
+            formant_eff: 1.0,
+            preserve: preserve_formants,
+            mix: mix.clamp(0.0, 1.0),
+            dry: vec![0.0; FRAME],
+            dry_pos: 0,
             freq_per_bin: sample_rate as f32 / FRAME as f32,
             expct: TWO_PI * HOP as f32 / FRAME as f32,
             // Forward+inverse are unnormalized (factor FRAME); double-Hann at 75%
@@ -102,24 +120,56 @@ impl PitchShifter {
         }
     }
 
-    pub fn configure(&mut self, pitch_semitones: f32, formant_semitones: f32) {
+    pub fn configure(
+        &mut self,
+        pitch_semitones: f32,
+        formant_semitones: f32,
+        mix: f32,
+        preserve_formants: bool,
+    ) {
         self.pitch = semitones_to_ratio(pitch_semitones);
         self.formant = semitones_to_ratio(formant_semitones);
+        self.mix = mix.clamp(0.0, 1.0);
+        self.preserve = preserve_formants;
+    }
+
+    /// Set the pitch shift directly as a ratio (used by autotune, which drives it
+    /// dynamically from the detected pitch).
+    #[inline]
+    pub fn set_pitch_ratio(&mut self, ratio: f32) {
+        self.pitch = ratio.max(0.05);
+    }
+
+    /// Algorithmic latency in samples (one analysis frame).
+    pub fn latency_samples(&self) -> usize {
+        FRAME
     }
 
     #[inline]
     pub fn process(&mut self, x: Sample) -> Sample {
+        // Wet path (phase vocoder), delayed by one frame.
         self.in_fifo[self.rover] = x;
-        let out = self.out_fifo[self.rover - LATENCY];
+        let wet = self.out_fifo[self.rover - LATENCY];
         self.rover += 1;
         if self.rover >= FRAME {
             self.rover = LATENCY;
             self.process_frame();
         }
-        out
+        // Dry path, delayed by the same one frame so the blend stays time-aligned.
+        let dry = self.dry[self.dry_pos];
+        self.dry[self.dry_pos] = x;
+        self.dry_pos += 1;
+        if self.dry_pos >= self.dry.len() {
+            self.dry_pos = 0;
+        }
+        dry * (1.0 - self.mix) + wet * self.mix
     }
 
     fn process_frame(&mut self) {
+        // Effective formant warp: when preserving formants, undo the shift the
+        // pitch re-bin would impose on the spectral envelope.
+        self.formant_eff = if self.preserve { self.formant / self.pitch } else { self.formant };
+
         // Windowed analysis frame -> spectrum.
         for k in 0..FRAME {
             self.real[k] = self.in_fifo[k] * self.window[k];
@@ -142,7 +192,7 @@ impl PitchShifter {
         }
 
         // Optional formant shift: reshape the magnitude envelope on its own.
-        if (self.formant - 1.0).abs() > 1e-3 {
+        if (self.formant_eff - 1.0).abs() > 1e-3 {
             self.apply_formant_shift();
         }
 
@@ -210,7 +260,7 @@ impl PitchShifter {
         }
         // Whiten, then multiply by the warped envelope.
         for k in 0..BINS {
-            let src = (k as f32 / self.formant).round();
+            let src = (k as f32 / self.formant_eff).round();
             let warped = if src >= 0.0 && (src as usize) < BINS {
                 self.env[src as usize]
             } else {
@@ -233,7 +283,7 @@ mod tests {
     /// Feed a sine and return the dominant frequency of the (settled) output.
     fn dominant_freq_after_shift(in_hz: f32, pitch_st: f32, formant_st: f32) -> f32 {
         let sr = 48_000u32;
-        let mut ps = PitchShifter::new(sr, pitch_st, formant_st);
+        let mut ps = PitchShifter::new(sr, pitch_st, formant_st, 1.0, false);
         let n = 24_000usize; // 0.5 s, well past the one-frame latency
         let mut out = vec![0.0f32; n];
         for i in 0..n {
