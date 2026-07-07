@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/core", "crates/audio", "crates/app", "crates/vst3"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 # GPLv3: Formant hosts VST3 plugins via Steinberg's interface definitions,
 # which are licensed GPL-3.0-or-later (or a Steinberg commercial license).

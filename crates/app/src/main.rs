@@ -20,6 +20,23 @@ use formant_core::{Config, Graph, NodeParams};
 use crate::engine::Engine;
 
 fn main() -> anyhow::Result<()> {
+    logging::init();
+    let result = run();
+    if let Err(e) = &result {
+        // A returned error would otherwise exit with no window and no message.
+        // Log it and, for the GUI, show the user why instead of vanishing.
+        logging::line(&format!("fatal: {e:?}"));
+        if parse_seconds().is_none() && parse_flag("--vst").is_none() {
+            platform::notify(
+                "Formant could not start",
+                &format!("{e}\n\nDetails were saved to %APPDATA%\\Formant\\log.txt."),
+            );
+        }
+    }
+    result
+}
+
+fn run() -> anyhow::Result<()> {
     if let Some(name) = parse_flag("--vst") {
         return run_vst_test(&name, parse_seconds().unwrap_or(4));
     }
@@ -82,7 +99,6 @@ fn run_gui() -> anyhow::Result<()> {
         eprintln!("Formant is already running.");
         return Ok(());
     }
-    logging::init();
     // COM for this (UI) thread - STA so it coexists with winit's OleInitialize.
     let com = ComGuard::new_sta()?;
     // If a config already exists, this is an upgrade, not a first run, so skip
