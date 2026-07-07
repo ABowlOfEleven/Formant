@@ -110,6 +110,13 @@ fn run_gui() -> anyhow::Result<()> {
         config.seen_tray_hint = true;
         let _ = config.save();
     }
+    if !config_existed {
+        // First run: adopt this machine's default mic and playback device (plus a
+        // virtual cable if one is installed), so Setup shows the user's real
+        // hardware instead of empty fields.
+        first_run_devices(&mut config);
+        let _ = config.save();
+    }
     // Seed the bundled example presets on first run.
     formant_core::Preset::install_factory();
     // Restore the last session's graph, or start from the default chain.
@@ -139,6 +146,35 @@ fn run_gui() -> anyhow::Result<()> {
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
+}
+
+/// Fill an empty config with the system default devices on first run, and add a
+/// virtual cable output if one is already installed.
+fn first_run_devices(config: &mut Config) {
+    use formant_audio::devices::{self, Direction};
+    if let Some(mic) = formant_audio::default_device_name(Direction::Capture) {
+        config.devices.mic = mic;
+    }
+    let mut outputs = Vec::new();
+    if let Some(monitor) = formant_audio::default_device_name(Direction::Render) {
+        outputs.push(monitor);
+    }
+    let render_names: Vec<String> = devices::list(Direction::Render)
+        .map(|v| v.into_iter().map(|d| d.name).collect())
+        .unwrap_or_default();
+    if let Some(cable) = devices::detect_cable(&render_names) {
+        if let Some(full) = render_names
+            .iter()
+            .find(|n| n.to_lowercase().contains(&cable.render_hint.to_lowercase()))
+        {
+            if !outputs.iter().any(|o| o == full) {
+                outputs.push(full.clone());
+            }
+        }
+    }
+    if !outputs.is_empty() {
+        config.devices.outputs = outputs;
+    }
 }
 
 fn run_headless(secs: u64) -> anyhow::Result<()> {

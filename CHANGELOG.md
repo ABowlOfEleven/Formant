@@ -3,6 +3,24 @@
 All notable changes to Formant are recorded here. The format is based on Keep a
 Changelog, and the project follows semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- A new, higher-quality Pitch node (bigger analysis frame and much more overlap,
+  with formant preservation) for cleaner, more natural pitch and formant shifts.
+  Autotune uses the same improved engine.
+
+### Changed
+
+- The original phase-vocoder shifter is kept as a separate "Warp" node. Its
+  grainier, more effected character is good for robotic and glitchy voices.
+- On first run, Formant now adopts the system default microphone and playback
+  device (and a virtual cable if one is installed), so a fresh install reflects
+  your actual hardware instead of placeholder device names.
+- The noise gate's lookahead control now also appears on its Mixer channel strip,
+  not only in the node inspector.
+
 ## [0.3.1]
 
 ### Fixed

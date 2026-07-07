@@ -876,7 +876,15 @@ impl FormantApp {
                         }
                     });
                     let mut params = node.params.clone();
-                    if primary_slider(ui, &mut params) {
+                    let mut changed = primary_slider(ui, &mut params);
+                    // The gate's lookahead is tuned often, so expose it here too.
+                    if let NodeParams::Gate { lookahead_ms, .. } = &mut params {
+                        changed |= ui
+                            .add(egui::Slider::new(lookahead_ms, 0.0..=40.0).text("look"))
+                            .on_hover_text("Lookahead (ms): opens the gate just before a word starts so onsets aren't clipped. 10-15 is a good balance.")
+                            .changed();
+                    }
+                    if changed {
                         if let Some(n) = self.graph.node_mut(id) {
                             n.params = params;
                         }
@@ -1238,7 +1246,8 @@ impl FormantApp {
                     ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
                         .on_hover_text("Blend between clean (0) and saturated (1).");
                 }
-                NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants } => {
+                NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants }
+                | NodeParams::PitchShift { pitch_semitones, formant_semitones, mix, preserve_formants } => {
                     ui.add(egui::Slider::new(pitch_semitones, -12.0..=12.0).text("pitch"))
                         .on_hover_text("Shift your pitch up or down in semitones (12 = one octave).");
                     ui.checkbox(preserve_formants, "preserve formants")
@@ -1714,7 +1723,7 @@ fn primary_slider(ui: &mut egui::Ui, params: &mut NodeParams) -> bool {
         NodeParams::Compressor { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr")).on_hover_text("Compressor threshold - lower evens out more of your voice.")),
         NodeParams::Eq { mid_db, .. } => Some(ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid")).on_hover_text("Mid boost/cut (presence).")),
         NodeParams::Saturator { drive, .. } => Some(ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive")).on_hover_text("Saturation drive - more = warmer/grittier.")),
-        NodeParams::Pitch { pitch_semitones, .. } => Some(ui.add(egui::Slider::new(pitch_semitones, -12.0..=12.0).text("st")).on_hover_text("Pitch shift in semitones.")),
+        NodeParams::Pitch { pitch_semitones, .. } | NodeParams::PitchShift { pitch_semitones, .. } => Some(ui.add(egui::Slider::new(pitch_semitones, -12.0..=12.0).text("st")).on_hover_text("Pitch shift in semitones.")),
         NodeParams::Autotune { strength, .. } => Some(ui.add(egui::Slider::new(strength, 0.0..=1.0).text("amt")).on_hover_text("Autotune strength.")),
         NodeParams::Reverb { mix, .. } | NodeParams::Delay { mix, .. } | NodeParams::Chorus { mix, .. } => Some(ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix")).on_hover_text("Dry/wet blend.")),
         NodeParams::Limiter { ceiling_db } => Some(ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceil")).on_hover_text("Output ceiling - nothing gets louder than this.")),
@@ -1741,7 +1750,8 @@ fn kind_help(kind: NodeKind) -> &'static str {
         NodeKind::Compressor => "Evens out your volume - brings quiet parts up and loud parts down - for a steadier, fuller, more 'pro' sound.",
         NodeKind::Eq => "Tone control: boost or cut lows, mids, and highs to shape your voice.",
         NodeKind::Saturator => "Adds warmth and subtle harmonics like analog gear - gentle at low drive, gritty at high.",
-        NodeKind::Pitch => "Shifts your pitch and/or formants in real time. Pitch makes you higher or lower; formant changes the apparent size of your voice without changing pitch. Turn on preserve formants for a natural shift. Adds a little latency.",
+        NodeKind::PitchShift => "High-quality pitch and formant shifting. Move your pitch up or down, or change the apparent size of your voice (formant) on its own. Preserve formants keeps it natural (no chipmunk). This is the one to use for musical or natural shifts.",
+        NodeKind::Pitch => "Warp: the original, lo-fi phase-vocoder shifter. Grainier and more 'effected' than the Pitch node, which makes it fun for robotic, alien, and glitchy character voices.",
         NodeKind::Autotune => "Real-time pitch correction: detects the note you're singing and pulls it to the nearest note in a key/scale. Set the key and scale, then dial strength (how hard) and speed (fast for the robotic effect, slow for natural).",
         NodeKind::Reverb => "Adds the sense of a room or space around your voice. Subtle amounts add depth; large amounts sound cavernous.",
         NodeKind::Delay => "An echo. Short times thicken, longer times repeat. Feedback controls how many repeats.",

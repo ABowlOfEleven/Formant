@@ -34,6 +34,12 @@ fn default_resolved(direction: Direction) -> Result<Resolved> {
     Ok(Resolved { id: devices::device_id(&dev)?, name: devices::friendly_name(&dev)? })
 }
 
+/// The friendly name of the system default device for a direction, if any.
+/// Used on first run to seed the config with the machine's real devices.
+pub fn default_device_name(direction: Direction) -> Option<String> {
+    default_resolved(direction).ok().map(|r| r.name)
+}
+
 /// Resolve `cfg` into concrete endpoints, always falling back to the system
 /// default devices so a fresh install on any machine still starts. The config's
 /// device names are the developer's gear; on another machine they simply do not

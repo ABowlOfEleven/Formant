@@ -59,8 +59,11 @@ pub enum NodeKind {
     Compressor,
     Eq,
     Saturator,
-    Pitch,
+    /// The high-quality pitch/formant shifter (shown as "Pitch").
+    PitchShift,
     Autotune,
+    /// The original phase-vocoder shifter, kept as a creative node ("Warp").
+    Pitch,
     Reverb,
     Delay,
     Chorus,
@@ -73,7 +76,7 @@ pub enum NodeKind {
 
 impl NodeKind {
     /// Effect kinds the user can add (Input/Output are fixed).
-    pub const EFFECTS: [NodeKind; 16] = [
+    pub const EFFECTS: [NodeKind; 17] = [
         NodeKind::HighPass,
         NodeKind::Denoise,
         NodeKind::Gate,
@@ -81,11 +84,12 @@ impl NodeKind {
         NodeKind::Compressor,
         NodeKind::Eq,
         NodeKind::Saturator,
-        NodeKind::Pitch,
+        NodeKind::PitchShift,
         NodeKind::Autotune,
         NodeKind::Reverb,
         NodeKind::Delay,
         NodeKind::Chorus,
+        NodeKind::Pitch,
         NodeKind::Limiter,
         NodeKind::Gain,
         NodeKind::Makeup,
@@ -103,7 +107,8 @@ impl NodeKind {
             NodeKind::Compressor => "Compressor",
             NodeKind::Eq => "EQ",
             NodeKind::Saturator => "Saturator",
-            NodeKind::Pitch => "Pitch",
+            NodeKind::PitchShift => "Pitch",
+            NodeKind::Pitch => "Warp",
             NodeKind::Autotune => "Autotune",
             NodeKind::Reverb => "Reverb",
             NodeKind::Delay => "Delay",
@@ -139,11 +144,17 @@ impl NodeKind {
             NodeKind::Compressor => NodeParams::Compressor { threshold_db: -18.0, ratio: 3.0 },
             NodeKind::Eq => NodeParams::Eq { low_db: 0.0, mid_db: 0.0, high_db: 0.0 },
             NodeKind::Saturator => NodeParams::Saturator { drive: 2.0, mix: 0.3 },
-            NodeKind::Pitch => NodeParams::Pitch {
+            NodeKind::PitchShift => NodeParams::PitchShift {
                 pitch_semitones: 0.0,
                 formant_semitones: 0.0,
                 mix: 1.0,
                 preserve_formants: true,
+            },
+            NodeKind::Pitch => NodeParams::Pitch {
+                pitch_semitones: 0.0,
+                formant_semitones: 0.0,
+                mix: 1.0,
+                preserve_formants: false,
             },
             NodeKind::Autotune => NodeParams::Autotune {
                 key: 0,
@@ -200,6 +211,13 @@ pub enum NodeParams {
         #[serde(default)]
         preserve_formants: bool,
     },
+    /// The high-quality pitch/formant shifter (bigger frame, higher overlap).
+    PitchShift {
+        pitch_semitones: f32,
+        formant_semitones: f32,
+        mix: f32,
+        preserve_formants: bool,
+    },
     Autotune {
         /// Key root, 0 = C.
         key: u8,
@@ -235,6 +253,7 @@ impl NodeParams {
             NodeParams::Eq { .. } => NodeKind::Eq,
             NodeParams::Saturator { .. } => NodeKind::Saturator,
             NodeParams::Pitch { .. } => NodeKind::Pitch,
+            NodeParams::PitchShift { .. } => NodeKind::PitchShift,
             NodeParams::Autotune { .. } => NodeKind::Autotune,
             NodeParams::Reverb { .. } => NodeKind::Reverb,
             NodeParams::Delay { .. } => NodeKind::Delay,
@@ -524,6 +543,7 @@ enum NodeProc {
     Eq(Eq),
     Saturator(Saturator),
     Pitch(Box<PitchShifter>),
+    PitchShift(Box<PitchShifter>),
     Autotune(Box<Autotune>),
     Reverb(Reverb),
     Delay(Delay),
@@ -564,12 +584,15 @@ impl NodeProc {
             }
             NodeParams::Saturator { drive, mix } => NodeProc::Saturator(Saturator::new(drive, mix)),
             NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants } => {
+                // Legacy "Warp": small frame, low overlap (its lo-fi character).
                 NodeProc::Pitch(Box::new(PitchShifter::new(
-                    SAMPLE_RATE,
-                    pitch_semitones,
-                    formant_semitones,
-                    mix,
-                    preserve_formants,
+                    SAMPLE_RATE, 1024, 4, pitch_semitones, formant_semitones, mix, preserve_formants,
+                )))
+            }
+            NodeParams::PitchShift { pitch_semitones, formant_semitones, mix, preserve_formants } => {
+                // "Pitch": larger frame + high overlap for cleaner, natural shifts.
+                NodeProc::PitchShift(Box::new(PitchShifter::new(
+                    SAMPLE_RATE, 2048, 8, pitch_semitones, formant_semitones, mix, preserve_formants,
                 )))
             }
             NodeParams::Autotune { key, scale, strength, speed_ms, preserve_formants, ref_a } => {
@@ -612,6 +635,7 @@ impl NodeProc {
             NodeProc::Eq(_) => NodeKind::Eq,
             NodeProc::Saturator(_) => NodeKind::Saturator,
             NodeProc::Pitch(_) => NodeKind::Pitch,
+            NodeProc::PitchShift(_) => NodeKind::PitchShift,
             NodeProc::Autotune(_) => NodeKind::Autotune,
             NodeProc::Reverb(_) => NodeKind::Reverb,
             NodeProc::Delay(_) => NodeKind::Delay,
@@ -649,7 +673,8 @@ impl NodeProc {
             (NodeProc::Saturator(s), NodeParams::Saturator { drive, mix }) => {
                 s.configure(*drive, *mix);
             }
-            (NodeProc::Pitch(p), NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants }) => {
+            (NodeProc::Pitch(p), NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants })
+            | (NodeProc::PitchShift(p), NodeParams::PitchShift { pitch_semitones, formant_semitones, mix, preserve_formants }) => {
                 p.configure(*pitch_semitones, *formant_semitones, *mix, *preserve_formants);
             }
             (NodeProc::Autotune(a), NodeParams::Autotune { key, scale, strength, speed_ms, preserve_formants, ref_a }) => {
@@ -737,7 +762,7 @@ impl NodeProc {
                     *o = s.process(x);
                 }
             }
-            NodeProc::Pitch(p) => {
+            NodeProc::Pitch(p) | NodeProc::PitchShift(p) => {
                 for (o, &x) in output.iter_mut().zip(input) {
                     *o = p.process(x);
                 }

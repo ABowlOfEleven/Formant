@@ -19,10 +19,9 @@ pub struct DeviceConfig {
 
 impl Default for DeviceConfig {
     fn default() -> Self {
-        Self {
-            mic: "Focusrite".into(),
-            outputs: vec!["Speakers (Sound Blaster".into(), "CABLE Input".into()],
-        }
+        // Empty means "use the system default". On first run the app fills these
+        // in with the machine's actual default mic and playback device.
+        Self { mic: String::new(), outputs: Vec::new() }
     }
 }
 

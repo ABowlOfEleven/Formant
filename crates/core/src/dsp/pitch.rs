@@ -7,8 +7,9 @@
 //! cepstral lifter, warps the envelope on its own, and reapplies it, so the
 //! timbre ("vocal tract size") can move independently of pitch.
 //!
-//! It runs streaming: one output sample per input sample, with a fixed latency
-//! of one frame. The frame math (FFTs, overlap-add) only fires once per hop.
+//! The frame size and overlap (oversampling) are configurable, so the same
+//! engine serves a fast, lo-fi "Warp" node (small frame, low overlap) and a
+//! cleaner "Pitch" node (larger frame, high overlap). Latency is one frame.
 
 use std::sync::Arc;
 
@@ -17,14 +18,6 @@ use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 
 use crate::types::Sample;
 
-const FRAME: usize = 1024;
-const OSAMP: usize = 4;
-const HOP: usize = FRAME / OSAMP;
-const BINS: usize = FRAME / 2 + 1;
-const LATENCY: usize = FRAME - HOP;
-/// Cepstral lifter cutoff (quefrency): lower = smoother envelope estimate.
-const LIFTER: usize = 48;
-
 const TWO_PI: f32 = std::f32::consts::TAU;
 
 /// Streaming pitch + formant shifter. Both shifts are expressed as ratios
@@ -32,16 +25,20 @@ const TWO_PI: f32 = std::f32::consts::TAU;
 pub struct PitchShifter {
     pitch: f32,
     formant: f32,
-    /// Effective formant ratio actually applied (folds in preservation).
     formant_eff: f32,
     preserve: bool,
     mix: f32,
+
+    // Sizing (fixed at construction).
+    frame: usize,
+    hop: usize,
+    bins: usize,
+    latency: usize,
+    lifter: usize,
+    osamp: f32,
     freq_per_bin: f32,
     expct: f32,
     scale: f32,
-    /// Dry delay ring (one frame) to time-align the dry path with the wet.
-    dry: Vec<f32>,
-    dry_pos: usize,
 
     r2c: Arc<dyn RealToComplex<f32>>,
     c2r: Arc<dyn ComplexToReal<f32>>,
@@ -59,30 +56,39 @@ pub struct PitchShifter {
     ana_freq: Vec<f32>,
     syn_magn: Vec<f32>,
     syn_freq: Vec<f32>,
-    // Formant (cepstral envelope) scratch.
     env: Vec<f32>,
     cepstrum: Vec<f32>,
     cep_spec: Vec<Complex<f32>>,
+    // Dry delay ring (one frame) to time-align the dry path with the wet.
+    dry: Vec<f32>,
+    dry_pos: usize,
 
     rover: usize,
 }
 
 impl PitchShifter {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sample_rate: u32,
+        frame: usize,
+        osamp: usize,
         pitch_semitones: f32,
         formant_semitones: f32,
         mix: f32,
         preserve_formants: bool,
     ) -> Self {
+        let bins = frame / 2 + 1;
+        let hop = frame / osamp;
+        let latency = frame - hop;
+        let lifter = (frame / 24).max(24);
+
         let mut planner = RealFftPlanner::<f32>::new();
-        let r2c = planner.plan_fft_forward(FRAME);
-        let c2r = planner.plan_fft_inverse(FRAME);
+        let r2c = planner.plan_fft_forward(frame);
+        let c2r = planner.plan_fft_inverse(frame);
         let scratch_len = r2c.get_scratch_len().max(c2r.get_scratch_len());
 
-        // Hann window.
-        let window: Vec<f32> = (0..FRAME)
-            .map(|k| 0.5 - 0.5 * (TWO_PI * k as f32 / FRAME as f32).cos())
+        let window: Vec<f32> = (0..frame)
+            .map(|k| 0.5 - 0.5 * (TWO_PI * k as f32 / frame as f32).cos())
             .collect();
 
         Self {
@@ -91,32 +97,38 @@ impl PitchShifter {
             formant_eff: 1.0,
             preserve: preserve_formants,
             mix: mix.clamp(0.0, 1.0),
-            dry: vec![0.0; FRAME],
-            dry_pos: 0,
-            freq_per_bin: sample_rate as f32 / FRAME as f32,
-            expct: TWO_PI * HOP as f32 / FRAME as f32,
-            // Forward+inverse are unnormalized (factor FRAME); double-Hann at 75%
-            // overlap sums to 1.5, so undo both.
-            scale: 2.0 / (3.0 * FRAME as f32),
+            frame,
+            hop,
+            bins,
+            latency,
+            lifter,
+            osamp: osamp as f32,
+            freq_per_bin: sample_rate as f32 / frame as f32,
+            expct: TWO_PI * hop as f32 / frame as f32,
+            // Forward+inverse are unnormalized (factor frame); the double-Hann
+            // overlap-add sums to osamp*3/8, so undo both.
+            scale: 8.0 / (3.0 * frame as f32 * osamp as f32),
             r2c,
             c2r,
             fft_scratch: vec![Complex::new(0.0, 0.0); scratch_len],
             window,
-            in_fifo: vec![0.0; FRAME],
-            out_fifo: vec![0.0; FRAME],
-            real: vec![0.0; FRAME],
-            spectrum: vec![Complex::new(0.0, 0.0); BINS],
-            last_phase: vec![0.0; BINS],
-            sum_phase: vec![0.0; BINS],
-            out_accum: vec![0.0; FRAME],
-            ana_magn: vec![0.0; BINS],
-            ana_freq: vec![0.0; BINS],
-            syn_magn: vec![0.0; BINS],
-            syn_freq: vec![0.0; BINS],
-            env: vec![1.0; BINS],
-            cepstrum: vec![0.0; FRAME],
-            cep_spec: vec![Complex::new(0.0, 0.0); BINS],
-            rover: LATENCY,
+            in_fifo: vec![0.0; frame],
+            out_fifo: vec![0.0; frame],
+            real: vec![0.0; frame],
+            spectrum: vec![Complex::new(0.0, 0.0); bins],
+            last_phase: vec![0.0; bins],
+            sum_phase: vec![0.0; bins],
+            out_accum: vec![0.0; frame],
+            ana_magn: vec![0.0; bins],
+            ana_freq: vec![0.0; bins],
+            syn_magn: vec![0.0; bins],
+            syn_freq: vec![0.0; bins],
+            env: vec![1.0; bins],
+            cepstrum: vec![0.0; frame],
+            cep_spec: vec![Complex::new(0.0, 0.0); bins],
+            dry: vec![0.0; frame],
+            dry_pos: 0,
+            rover: latency,
         }
     }
 
@@ -133,8 +145,7 @@ impl PitchShifter {
         self.preserve = preserve_formants;
     }
 
-    /// Set the pitch shift directly as a ratio (used by autotune, which drives it
-    /// dynamically from the detected pitch).
+    /// Set the pitch shift directly as a ratio (used by autotune).
     #[inline]
     pub fn set_pitch_ratio(&mut self, ratio: f32) {
         self.pitch = ratio.max(0.05);
@@ -142,20 +153,20 @@ impl PitchShifter {
 
     /// Algorithmic latency in samples (one analysis frame).
     pub fn latency_samples(&self) -> usize {
-        FRAME
+        self.frame
     }
 
     #[inline]
     pub fn process(&mut self, x: Sample) -> Sample {
         // Wet path (phase vocoder), delayed by one frame.
         self.in_fifo[self.rover] = x;
-        let wet = self.out_fifo[self.rover - LATENCY];
+        let wet = self.out_fifo[self.rover - self.latency];
         self.rover += 1;
-        if self.rover >= FRAME {
-            self.rover = LATENCY;
+        if self.rover >= self.frame {
+            self.rover = self.latency;
             self.process_frame();
         }
-        // Dry path, delayed by the same one frame so the blend stays time-aligned.
+        // Dry path, delayed the same one frame so the blend stays time-aligned.
         let dry = self.dry[self.dry_pos];
         self.dry[self.dry_pos] = x;
         self.dry_pos += 1;
@@ -166,32 +177,32 @@ impl PitchShifter {
     }
 
     fn process_frame(&mut self) {
+        let frame = self.frame;
+        let bins = self.bins;
+
         // Effective formant warp: when preserving formants, undo the shift the
         // pitch re-bin would impose on the spectral envelope.
         self.formant_eff = if self.preserve { self.formant / self.pitch } else { self.formant };
 
-        // Windowed analysis frame -> spectrum.
-        for k in 0..FRAME {
+        for k in 0..frame {
             self.real[k] = self.in_fifo[k] * self.window[k];
         }
         let _ = self.r2c.process_with_scratch(&mut self.real, &mut self.spectrum, &mut self.fft_scratch);
 
         // Analysis: magnitude + instantaneous frequency per bin.
-        for k in 0..BINS {
+        for k in 0..bins {
             let (re, im) = (self.spectrum[k].re, self.spectrum[k].im);
             self.ana_magn[k] = (re * re + im * im).sqrt();
             let phase = im.atan2(re);
             let mut delta = phase - self.last_phase[k];
             self.last_phase[k] = phase;
             delta -= k as f32 * self.expct;
-            // Wrap to +/- pi.
             let qpd = (delta / std::f32::consts::PI).round();
             delta -= std::f32::consts::PI * qpd;
-            delta = OSAMP as f32 * delta / TWO_PI;
+            delta = self.osamp * delta / TWO_PI;
             self.ana_freq[k] = (k as f32 + delta) * self.freq_per_bin;
         }
 
-        // Optional formant shift: reshape the magnitude envelope on its own.
         if (self.formant_eff - 1.0).abs() > 1e-3 {
             self.apply_formant_shift();
         }
@@ -203,19 +214,19 @@ impl PitchShifter {
         for v in self.syn_freq.iter_mut() {
             *v = 0.0;
         }
-        for k in 0..BINS {
+        for k in 0..bins {
             let index = (k as f32 * self.pitch).round() as usize;
-            if index < BINS {
+            if index < bins {
                 self.syn_magn[index] += self.ana_magn[k];
                 self.syn_freq[index] = self.ana_freq[k] * self.pitch;
             }
         }
 
         // Synthesis: rebuild phases from the shifted frequencies.
-        for k in 0..BINS {
+        for k in 0..bins {
             let magn = self.syn_magn[k];
             let mut delta = self.syn_freq[k] / self.freq_per_bin - k as f32;
-            delta = TWO_PI * delta / OSAMP as f32;
+            delta = TWO_PI * delta / self.osamp;
             delta += k as f32 * self.expct;
             self.sum_phase[k] += delta;
             let phase = self.sum_phase[k];
@@ -224,44 +235,41 @@ impl PitchShifter {
 
         let _ = self.c2r.process_with_scratch(&mut self.spectrum, &mut self.real, &mut self.fft_scratch);
 
-        // Windowed overlap-add into the accumulator.
-        for k in 0..FRAME {
+        for k in 0..frame {
             self.out_accum[k] += self.window[k] * self.real[k] * self.scale;
         }
-        // Emit the first hop, then slide everything down by one hop.
-        self.out_fifo[..HOP].copy_from_slice(&self.out_accum[..HOP]);
-        self.out_accum.copy_within(HOP.., 0);
-        for v in self.out_accum[FRAME - HOP..].iter_mut() {
+        let hop = self.hop;
+        self.out_fifo[..hop].copy_from_slice(&self.out_accum[..hop]);
+        self.out_accum.copy_within(hop.., 0);
+        for v in self.out_accum[frame - hop..].iter_mut() {
             *v = 0.0;
         }
-        self.in_fifo.copy_within(HOP.., 0);
+        self.in_fifo.copy_within(hop.., 0);
     }
 
     /// Estimate the spectral envelope (cepstral smoothing) and warp it by the
     /// formant ratio, leaving the fine structure (pitch) where it is.
     fn apply_formant_shift(&mut self) {
-        // Log-magnitude spectrum -> cepstrum.
-        for k in 0..BINS {
+        let frame = self.frame;
+        let bins = self.bins;
+        for k in 0..bins {
             self.cep_spec[k] = Complex::new((self.ana_magn[k] + 1e-9).ln(), 0.0);
         }
         let _ = self.c2r.process_with_scratch(&mut self.cep_spec, &mut self.cepstrum, &mut self.fft_scratch);
-        let norm = 1.0 / FRAME as f32;
+        let norm = 1.0 / frame as f32;
         for v in self.cepstrum.iter_mut() {
             *v *= norm;
         }
-        // Lifter: keep only low quefrencies (both ends of the real cepstrum).
-        for q in LIFTER..=FRAME - LIFTER {
+        for q in self.lifter..=frame - self.lifter {
             self.cepstrum[q] = 0.0;
         }
-        // Back to a smoothed log-spectrum, then exp -> envelope.
         let _ = self.r2c.process_with_scratch(&mut self.cepstrum, &mut self.cep_spec, &mut self.fft_scratch);
-        for k in 0..BINS {
+        for k in 0..bins {
             self.env[k] = self.cep_spec[k].re.exp();
         }
-        // Whiten, then multiply by the warped envelope.
-        for k in 0..BINS {
+        for k in 0..bins {
             let src = (k as f32 / self.formant_eff).round();
-            let warped = if src >= 0.0 && (src as usize) < BINS {
+            let warped = if src >= 0.0 && (src as usize) < bins {
                 self.env[src as usize]
             } else {
                 0.0
@@ -283,14 +291,13 @@ mod tests {
     /// Feed a sine and return the dominant frequency of the (settled) output.
     fn dominant_freq_after_shift(in_hz: f32, pitch_st: f32, formant_st: f32) -> f32 {
         let sr = 48_000u32;
-        let mut ps = PitchShifter::new(sr, pitch_st, formant_st, 1.0, false);
-        let n = 24_000usize; // 0.5 s, well past the one-frame latency
+        let mut ps = PitchShifter::new(sr, 1024, 4, pitch_st, formant_st, 1.0, false);
+        let n = 24_000usize;
         let mut out = vec![0.0f32; n];
         for i in 0..n {
             let x = (TWO_PI * in_hz * i as f32 / sr as f32).sin();
             out[i] = ps.process(x);
         }
-        // Zero-crossing rate on the back half estimates the frequency cheaply.
         let tail = &out[n / 2..];
         let mut crossings = 0;
         for w in tail.windows(2) {
@@ -316,9 +323,20 @@ mod tests {
 
     #[test]
     fn formant_shift_keeps_the_pitch() {
-        // Formant shift should not move the fundamental.
         let f = dominant_freq_after_shift(300.0, 0.0, 5.0);
         assert!((f - 300.0).abs() < 25.0, "pitch moved with formant: {f}");
         assert!(f.is_finite());
+    }
+
+    #[test]
+    fn hq_settings_are_finite_and_track_pitch() {
+        // The higher-quality tier (bigger frame, more overlap) still works.
+        let sr = 48_000u32;
+        let mut ps = PitchShifter::new(sr, 2048, 8, 7.0, 0.0, 1.0, true);
+        for i in 0..48_000usize {
+            let y = ps.process((TWO_PI * 200.0 * i as f32 / sr as f32).sin());
+            assert!(y.is_finite());
+        }
+        assert_eq!(ps.latency_samples(), 2048);
     }
 }

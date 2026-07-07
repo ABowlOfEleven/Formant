@@ -75,7 +75,9 @@ impl Autotune {
     ) -> Self {
         let mut a = Self {
             detector: PitchDetector::new(sample_rate),
-            shifter: PitchShifter::new(sample_rate, 0.0, 0.0, 1.0, preserve_formants),
+            // Low latency (1024) with high overlap (8) for responsive, smooth
+            // correction while singing.
+            shifter: PitchShifter::new(sample_rate, 1024, 8, 0.0, 0.0, 1.0, preserve_formants),
             sample_rate: sample_rate as f32,
             key: 0,
             mask: 0,

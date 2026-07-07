@@ -27,4 +27,4 @@ pub use duplex::{Stats, WasapiBackend};
 #[cfg(windows)]
 pub use hotkeys::{Action, SharedBindings};
 #[cfg(windows)]
-pub use select::{resolve, Routing};
+pub use select::{default_device_name, resolve, Routing};
