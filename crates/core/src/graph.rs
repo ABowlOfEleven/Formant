@@ -25,8 +25,14 @@ use crate::SAMPLE_RATE;
 
 pub type NodeId = u64;
 
-/// VAD probability above which a VAD-gated gate opens.
-const VAD_OPEN: f32 = 0.5;
+/// VAD probability above which a VAD-gated gate opens. Kept fairly low so speech
+/// onsets register quickly; the gate's lookahead and hold do the rest.
+const VAD_OPEN: f32 = 0.35;
+
+/// Default gate lookahead in ms (also the value older presets get on load).
+fn default_gate_lookahead() -> f32 {
+    12.0
+}
 
 /// A processor for a `Vst3` node, supplied by the host app (which owns the
 /// plugin instance). Lives behind a trait so core never depends on the VST3 /
@@ -115,6 +121,7 @@ impl NodeKind {
                 hold_ms: 40.0,
                 release_ms: 120.0,
                 vad_gate: true,
+                lookahead_ms: default_gate_lookahead(),
             },
             NodeKind::DeEsser => NodeParams::DeEsser {
                 threshold_db: -28.0,
@@ -157,6 +164,8 @@ pub enum NodeParams {
         hold_ms: f32,
         release_ms: f32,
         vad_gate: bool,
+        #[serde(default = "default_gate_lookahead")]
+        lookahead_ms: f32,
     },
     DeEsser { threshold_db: f32, ratio: f32, split_hz: f32 },
     Compressor { threshold_db: f32, ratio: f32 },
@@ -426,6 +435,7 @@ impl Graph {
                 hold_ms: 40.0,
                 release_ms: 120.0,
                 vad_gate: true,
+                lookahead_ms: default_gate_lookahead(),
             },
             [490.0, 240.0],
         );
@@ -498,9 +508,9 @@ impl NodeProc {
                 NodeProc::HighPass(Biquad::highpass(SAMPLE_RATE, cutoff_hz, 0.707))
             }
             NodeParams::Denoise => NodeProc::Denoise(Box::new(Denoise::new())),
-            NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate } => {
+            NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms } => {
                 NodeProc::Gate {
-                    gate: Gate::new(SAMPLE_RATE, threshold_db, range_db, attack_ms, hold_ms, release_ms),
+                    gate: Gate::new(SAMPLE_RATE, threshold_db, range_db, attack_ms, hold_ms, release_ms, lookahead_ms),
                     vad_gate,
                 }
             }
@@ -564,9 +574,9 @@ impl NodeProc {
             }
             (
                 NodeProc::Gate { gate, vad_gate },
-                NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate: vg },
+                NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate: vg, lookahead_ms },
             ) => {
-                gate.configure(*threshold_db, *range_db, *attack_ms, *hold_ms, *release_ms);
+                gate.configure(*threshold_db, *range_db, *attack_ms, *hold_ms, *release_ms, *lookahead_ms);
                 *vad_gate = *vg;
             }
             (NodeProc::DeEsser(d), NodeParams::DeEsser { threshold_db, ratio, split_hz }) => {

@@ -83,7 +83,7 @@ const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
 const RUN_VALUE: &str = "Formant";
 
-/// Whether "start Formant with Windows" is currently enabled.
+/// Whether "start Formant with Windows" is currently enabled (an HKCU Run entry).
 pub fn autostart_enabled() -> bool {
     #[cfg(windows)]
     {

@@ -10,6 +10,11 @@ $desktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Formant.lnk'
 Remove-Item -Recurse -Force $installDir
 Remove-Item -Force $startLnk
 Remove-Item -Force $desktopLnk
+
+# Remove autostart: the scheduled task and any legacy Run-key entry.
+schtasks /Delete /TN "Formant" /F 2>$null | Out-Null
+Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Formant' -ErrorAction SilentlyContinue
+
 Write-Host "Removed Formant install + shortcuts."
 
 if ($Purge) {

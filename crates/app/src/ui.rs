@@ -68,6 +68,9 @@ pub struct FormantApp {
     scope_buf: Vec<f32>,
     // Gate auto-calibration in progress, if any.
     calibration: Option<Calibration>,
+    // Cached autostart state (querying it spawns a process, so we don't do it
+    // every frame; refreshed on entering Setup).
+    autostart_on: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -128,6 +131,7 @@ impl FormantApp {
             spectrum: crate::spectrum::Spectrum::new(),
             scope_buf: Vec::new(),
             calibration: None,
+            autostart_on: false,
         };
         // Scan devices up front so the virtual-cable check is ready on first frame.
         app.refresh_devices();
@@ -597,6 +601,7 @@ impl eframe::App for FormantApp {
         // check reflects anything they just installed.
         if self.tab == Tab::Setup && self.last_tab != Some(Tab::Setup) {
             self.refresh_devices();
+            self.autostart_on = crate::platform::autostart_enabled();
         }
         self.last_tab = Some(self.tab);
         // Refresh the spectrum bands from the latest output samples.
@@ -1189,7 +1194,7 @@ impl FormantApp {
                     ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("cutoff Hz"))
                         .on_hover_text("Frequencies below this are removed. ~80-120 Hz clears rumble without thinning your voice.");
                 }
-                NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate } => {
+                NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms } => {
                     ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("threshold dB"))
                         .on_hover_text("How loud you must be for the gate to open. Set it just above your background noise.");
                     ui.add(egui::Slider::new(range_db, -90.0..=0.0).text("range dB"))
@@ -1200,6 +1205,8 @@ impl FormantApp {
                         .on_hover_text("How long it stays open after you stop, so word endings aren't cut off.");
                     ui.add(egui::Slider::new(release_ms, 5.0..=1000.0).logarithmic(true).text("release ms"))
                         .on_hover_text("How slowly the gate closes after the hold - longer is more natural.");
+                    ui.add(egui::Slider::new(lookahead_ms, 0.0..=40.0).text("lookahead ms"))
+                        .on_hover_text("Delays the audio slightly so the gate can open before the start of a word, instead of clipping it. Higher preserves more onset but adds that much latency. 10-15 ms is a good balance.");
                     ui.checkbox(vad_gate, "follow VAD (RNNoise)")
                         .on_hover_text("Open the gate from AI voice detection instead of raw loudness.");
                 }
@@ -1447,7 +1454,7 @@ impl FormantApp {
                                     ui.selectable_value(&mut self.config.devices.outputs[i], d.clone(), d);
                                 }
                             });
-                        if ui.button("✕").on_hover_text("Remove this output").clicked() {
+                        if ui.button("×").on_hover_text("Remove this output").clicked() {
                             remove = Some(i);
                         }
                     });
@@ -1523,7 +1530,7 @@ impl FormantApp {
             ui.add_space(8.0);
             theme::card(ui.style()).show(ui, |ui| {
                 ui.label(RichText::new("STARTUP").color(theme::CYAN).strong());
-                let mut autostart = crate::platform::autostart_enabled();
+                let mut autostart = self.autostart_on;
                 if ui
                     .checkbox(&mut autostart, "Start Formant when Windows starts")
                     .on_hover_text("Launch Formant automatically at login, so your processed mic is always ready.")
@@ -1534,6 +1541,7 @@ impl FormantApp {
                         Ok(_) => "autostart disabled".into(),
                         Err(e) => format!("autostart failed: {e}"),
                     };
+                    self.autostart_on = crate::platform::autostart_enabled();
                 }
                 ui.label(
                     RichText::new("Closing the window hides Formant to the system tray; use the tray icon (or Quit) to bring it back.")

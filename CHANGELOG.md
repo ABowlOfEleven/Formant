@@ -3,6 +3,18 @@
 All notable changes to Formant are recorded here. The format is based on Keep a
 Changelog, and the project follows semantic versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- The noise gate no longer swallows the start of sentences in voice-activity
+  mode. A short lookahead lets the gate open just before a word's onset, the
+  VAD decision now runs through the same hold and hysteresis as the level gate so
+  gaps between words do not clip, and the open threshold is a little lower. The
+  gate's lookahead is adjustable (0 to 40 ms; default 12).
+- Some UI symbols rendered as empty boxes on systems whose default font lacked
+  those glyphs. Formant now falls back to a Windows symbol font so they display.
+
 ## [0.2.0]
 
 A big creative and reliability update. Existing presets, sessions, and config

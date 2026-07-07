@@ -20,7 +20,33 @@ pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
     a.lerp_to_gamma(b, t.clamp(0.0, 1.0))
 }
 
+/// Give egui a fallback font with broad symbol coverage. Ubuntu-Light (egui's
+/// default) is missing some glyphs we use (the close X, arrows, geometric dots),
+/// which otherwise render as empty boxes ("tofu"). Windows always ships a font
+/// that covers them; this is best-effort and skips silently if none is found.
+fn install_symbol_fallback(ctx: &egui::Context) {
+    let candidates = [
+        r"C:\Windows\Fonts\seguisym.ttf", // Segoe UI Symbol: shapes, dingbats, arrows
+        r"C:\Windows\Fonts\segoeui.ttf",  // Segoe UI
+        r"C:\Windows\Fonts\arial.ttf",
+    ];
+    let Some(bytes) = candidates.iter().find_map(|p| std::fs::read(p).ok()) else {
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "win_symbols".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+    );
+    // Append as the last fallback so it only fills glyphs the primary font lacks.
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("win_symbols".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
 pub fn apply(ctx: &egui::Context) {
+    install_symbol_fallback(ctx);
     let mut style = (*ctx.global_style()).clone();
 
     // Spacing - more breathing room.
