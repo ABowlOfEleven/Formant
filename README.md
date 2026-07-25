@@ -43,10 +43,19 @@ microphone at the cable and you are finished.
 
 ![The Formant mixer, with meters, presets, and the channel strip](docs/mixer.png)
 
-**The chain.** High-pass, RNNoise denoise, gate, de-esser, compressor, 3-band EQ,
-saturator, limiter, and gain. Enough to take a raw mic to a finished voice, with
-bypass on every node and a global bypass for quick before-and-after. The Mixer
-tab lays the chain out as a channel strip with live meters.
+**The chain.** High-pass, RNNoise denoise, gate, de-esser, compressor, parametric
+3-band EQ, saturator, limiter, and gain. Enough to take a raw mic to a finished
+voice, with bypass on every node and a global bypass for quick before-and-after.
+The Mixer tab lays the chain out as a channel strip with live meters.
+
+The processing aims to hold up next to commercial plugins rather than merely be
+correct. The compressor tracks loudness rather than the waveform, with a soft
+knee and a program-dependent release. The limiter looks ahead so it turns the
+gain down before a peak instead of clipping it flat, and it catches peaks that
+fall between samples. Saturation runs oversampled, so the harmonics it creates
+cannot fold back down as content unrelated to your voice. The de-esser ducks a
+band around your sibilance instead of everything above a crossover, so taming a
+harsh "sss" does not cost you the air in your voice.
 
 **A real node editor.** Pan, zoom, and wire it however you like. A Mix node sums
 its inputs and any output can fan out, so you can build parallel compression,
@@ -101,13 +110,23 @@ installs to `Program Files`. Either way, config and presets live in
 2. In Discord, OBS, or your game, set the microphone to that same virtual cable.
 3. Shape your sound in the **Mixer** and **Nodes** tabs, or just load a preset.
 
-Two presets ship with the app to get you going:
+Five presets ship with the app to get you going:
 
 - **Standard Vocal** is the classic single chain: high-pass, denoise, gate,
   de-esser, compressor, EQ, makeup.
+- **Broadcast** is tighter and more present, the sound of someone reading the
+  news.
+- **Warm** is fuller and softer, with a little parallel compression for body and
+  gentle saturation instead of clamping.
+- **Podcast** stays even and intelligible over long stretches, with tighter noise
+  control and enough makeup gain to land near streaming loudness targets.
 - **Parallel Vibe** splits the cleaned voice three ways into a dry path, a
   heavily compressed parallel path, and a saturated path, then blends them back
   together through a Mix node. It is a good tour of the parallel routing.
+
+All of them are deliberately restrained. A preset that sounds impressive the
+instant you speak usually stops being impressive about a minute in, and heavy
+processing cannot be undone further down the chain.
 
 ## Build and test
 

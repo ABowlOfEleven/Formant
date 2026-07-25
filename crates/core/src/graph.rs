@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::dsp::{
-    Autotune, Biquad, Chorus, Compressor, DeEsser, Delay, Denoise, Eq, Gate, Limiter, PitchShifter,
-    Reverb, Saturator, Scale,
+    Autotune, Chorus, Compressor, DeEsser, Delay, Denoise, Eq, Gate, HighPass, Limiter,
+    PitchShifter, Reverb, Saturator, Scale,
 };
 use crate::engine::GateOverride;
 use crate::types::Sample;
@@ -37,6 +37,51 @@ fn default_gate_lookahead() -> f32 {
 /// Default wet mix for effects that older presets predate (fully wet).
 fn default_full_mix() -> f32 {
     1.0
+}
+
+// Defaults for fields added in the DSP quality pass. Presets and sessions saved
+// before it simply get the new behavior.
+
+/// 24 dB/octave rumble filtering by default.
+fn default_true() -> bool {
+    true
+}
+/// A soft knee, in dB, wide enough to be smooth without sounding vague.
+fn default_knee() -> f32 {
+    6.0
+}
+fn default_comp_attack() -> f32 {
+    10.0
+}
+fn default_comp_release() -> f32 {
+    80.0
+}
+fn default_zero() -> f32 {
+    0.0
+}
+/// Maximum de-essing, in dB. A cap keeps a loud "sss" from punching a hole.
+fn default_deess_range() -> f32 {
+    12.0
+}
+fn default_low_hz() -> f32 {
+    crate::dsp::eq::DEFAULT_LOW_HZ
+}
+fn default_mid_hz() -> f32 {
+    crate::dsp::eq::DEFAULT_MID_HZ
+}
+fn default_mid_q() -> f32 {
+    crate::dsp::eq::DEFAULT_MID_Q
+}
+fn default_high_hz() -> f32 {
+    crate::dsp::eq::DEFAULT_HIGH_HZ
+}
+/// Limiter lookahead in ms. Enough to catch a plosive, short enough not to
+/// matter for live monitoring.
+fn default_limiter_lookahead() -> f32 {
+    2.0
+}
+fn default_limiter_release() -> f32 {
+    100.0
 }
 
 /// A processor for a `Vst3` node, supplied by the host app (which owns the
@@ -125,7 +170,7 @@ impl NodeKind {
         match self {
             NodeKind::Input => NodeParams::Input,
             NodeKind::Output => NodeParams::Output,
-            NodeKind::HighPass => NodeParams::HighPass { cutoff_hz: 80.0 },
+            NodeKind::HighPass => NodeParams::HighPass { cutoff_hz: 85.0, steep: true },
             NodeKind::Denoise => NodeParams::Denoise,
             NodeKind::Gate => NodeParams::Gate {
                 threshold_db: -45.0,
@@ -139,11 +184,30 @@ impl NodeKind {
             NodeKind::DeEsser => NodeParams::DeEsser {
                 threshold_db: -28.0,
                 ratio: 4.0,
-                split_hz: 6500.0,
+                split_hz: 6800.0,
+                range_db: 8.0,
             },
-            NodeKind::Compressor => NodeParams::Compressor { threshold_db: -18.0, ratio: 3.0 },
-            NodeKind::Eq => NodeParams::Eq { low_db: 0.0, mid_db: 0.0, high_db: 0.0 },
-            NodeKind::Saturator => NodeParams::Saturator { drive: 2.0, mix: 0.3 },
+            // Gentle by default: a moderate ratio with a wide knee and an
+            // unhurried release evens a voice out without announcing itself.
+            NodeKind::Compressor => NodeParams::Compressor {
+                threshold_db: -20.0,
+                ratio: 2.5,
+                knee_db: 8.0,
+                attack_ms: 12.0,
+                release_ms: 120.0,
+                makeup_db: 0.0,
+                mix: 1.0,
+            },
+            NodeKind::Eq => NodeParams::Eq {
+                low_db: 0.0,
+                mid_db: 0.0,
+                high_db: 0.0,
+                low_hz: default_low_hz(),
+                mid_hz: default_mid_hz(),
+                mid_q: default_mid_q(),
+                high_hz: default_high_hz(),
+            },
+            NodeKind::Saturator => NodeParams::Saturator { drive: 2.0, mix: 0.25 },
             NodeKind::PitchShift => NodeParams::PitchShift {
                 pitch_semitones: 0.0,
                 formant_semitones: 0.0,
@@ -161,13 +225,16 @@ impl NodeKind {
                 scale: Scale::Major,
                 strength: 0.9,
                 speed_ms: 40.0,
-                preserve_formants: true,
                 ref_a: 440.0,
             },
             NodeKind::Reverb => NodeParams::Reverb { room_size: 0.5, damping: 0.5, mix: 0.25 },
             NodeKind::Delay => NodeParams::Delay { time_ms: 250.0, feedback: 0.3, mix: 0.3 },
             NodeKind::Chorus => NodeParams::Chorus { depth_ms: 6.0, rate_hz: 1.2, mix: 0.4 },
-            NodeKind::Limiter => NodeParams::Limiter { ceiling_db: -1.0 },
+            NodeKind::Limiter => NodeParams::Limiter {
+                ceiling_db: -1.0,
+                lookahead_ms: default_limiter_lookahead(),
+                release_ms: default_limiter_release(),
+            },
             NodeKind::Gain => NodeParams::Gain { gain_db: 0.0 },
             NodeKind::Makeup => NodeParams::Makeup { gain_db: 0.0 },
             NodeKind::Mix => NodeParams::Mix { gain_db: 0.0 },
@@ -187,7 +254,12 @@ impl NodeKind {
 pub enum NodeParams {
     Input,
     Output,
-    HighPass { cutoff_hz: f32 },
+    HighPass {
+        cutoff_hz: f32,
+        /// 24 dB/octave instead of 12.
+        #[serde(default = "default_true")]
+        steep: bool,
+    },
     Denoise,
     Gate {
         threshold_db: f32,
@@ -199,9 +271,42 @@ pub enum NodeParams {
         #[serde(default = "default_gate_lookahead")]
         lookahead_ms: f32,
     },
-    DeEsser { threshold_db: f32, ratio: f32, split_hz: f32 },
-    Compressor { threshold_db: f32, ratio: f32 },
-    Eq { low_db: f32, mid_db: f32, high_db: f32 },
+    DeEsser {
+        threshold_db: f32,
+        ratio: f32,
+        split_hz: f32,
+        /// Cap on how much the sibilance band may be pulled down.
+        #[serde(default = "default_deess_range")]
+        range_db: f32,
+    },
+    Compressor {
+        threshold_db: f32,
+        ratio: f32,
+        #[serde(default = "default_knee")]
+        knee_db: f32,
+        #[serde(default = "default_comp_attack")]
+        attack_ms: f32,
+        #[serde(default = "default_comp_release")]
+        release_ms: f32,
+        #[serde(default = "default_zero")]
+        makeup_db: f32,
+        /// Blend back toward dry: below 1.0 this is parallel compression.
+        #[serde(default = "default_full_mix")]
+        mix: f32,
+    },
+    Eq {
+        low_db: f32,
+        mid_db: f32,
+        high_db: f32,
+        #[serde(default = "default_low_hz")]
+        low_hz: f32,
+        #[serde(default = "default_mid_hz")]
+        mid_hz: f32,
+        #[serde(default = "default_mid_q")]
+        mid_q: f32,
+        #[serde(default = "default_high_hz")]
+        high_hz: f32,
+    },
     Saturator { drive: f32, mix: f32 },
     Pitch {
         pitch_semitones: f32,
@@ -218,19 +323,29 @@ pub enum NodeParams {
         mix: f32,
         preserve_formants: bool,
     },
+    /// Pitch correction. There is no formant-preservation switch: the PSOLA
+    /// engine behind it keeps the vocal tract character inherently, so the flag
+    /// older presets carry is simply ignored on load.
     Autotune {
         /// Key root, 0 = C.
         key: u8,
         scale: Scale,
         strength: f32,
         speed_ms: f32,
-        preserve_formants: bool,
         ref_a: f32,
     },
     Reverb { room_size: f32, damping: f32, mix: f32 },
     Delay { time_ms: f32, feedback: f32, mix: f32 },
     Chorus { depth_ms: f32, rate_hz: f32, mix: f32 },
-    Limiter { ceiling_db: f32 },
+    Limiter {
+        ceiling_db: f32,
+        /// How far ahead the limiter looks. This is what lets it turn the gain
+        /// down before a peak arrives instead of clipping it.
+        #[serde(default = "default_limiter_lookahead")]
+        lookahead_ms: f32,
+        #[serde(default = "default_limiter_release")]
+        release_ms: f32,
+    },
     Gain { gain_db: f32 },
     Makeup { gain_db: f32 },
     /// Sums all of its inputs (parallel/blend routing), with an output trim.
@@ -319,6 +434,24 @@ impl Graph {
         for (i, kind) in kinds.iter().enumerate() {
             let pos = [40.0 + i as f32 * 150.0, 120.0];
             let id = g.add_node(kind.default_params(), pos);
+            if let Some(p) = prev {
+                g.connect(p, id);
+            }
+            prev = Some(id);
+        }
+        g
+    }
+
+    /// Build a linear chain: Input, then each effect in order, then Output.
+    pub fn linear(effects: Vec<NodeParams>) -> Self {
+        let mut g = Graph { nodes: Vec::new(), connections: Vec::new(), next_id: 1 };
+        let mut prev: Option<NodeId> = None;
+        let mut all = Vec::with_capacity(effects.len() + 2);
+        all.push(NodeParams::Input);
+        all.extend(effects);
+        all.push(NodeParams::Output);
+        for (i, params) in all.into_iter().enumerate() {
+            let id = g.add_node(params, [40.0 + i as f32 * 150.0, 120.0]);
             if let Some(p) = prev {
                 g.connect(p, id);
             }
@@ -473,6 +606,22 @@ impl Graph {
         order
     }
 
+    /// Total delay the active chain adds, in samples.
+    ///
+    /// Several nodes buy their quality with time: noise reduction works a frame
+    /// at a time, the gate and limiter look ahead so they can act *before* the
+    /// sound that triggered them, and pitch work needs a window to analyze. None
+    /// of that is avoidable, but it is worth being able to see, because it is
+    /// the number that decides whether monitoring yourself feels immediate.
+    pub fn latency_samples(&self) -> usize {
+        self.exec_path()
+            .iter()
+            .filter_map(|id| self.node(*id))
+            .filter(|n| !n.bypass)
+            .map(|n| node_latency(&n.params))
+            .sum()
+    }
+
     /// A showcase chain using parallel routing: the cleaned voice is split into a
     /// dry path, a heavily-compressed parallel path, and a saturated path, all
     /// blended back together through a `Mix`, then EQ'd and limited. Demonstrates
@@ -482,7 +631,7 @@ impl Graph {
         let mut g = Graph { nodes: Vec::new(), connections: Vec::new(), next_id: 1 };
         // Front-end cleanup (linear).
         let input = g.add_node(P::Input, [40.0, 240.0]);
-        let hpf = g.add_node(P::HighPass { cutoff_hz: 85.0 }, [190.0, 240.0]);
+        let hpf = g.add_node(P::HighPass { cutoff_hz: 85.0, steep: true }, [190.0, 240.0]);
         let denoise = g.add_node(P::Denoise, [340.0, 240.0]);
         let gate = g.add_node(
             P::Gate {
@@ -498,14 +647,46 @@ impl Graph {
         );
         // Three parallel branches off the cleaned signal.
         let dry = g.add_node(P::Gain { gain_db: -1.5 }, [690.0, 90.0]);
-        let comp = g.add_node(P::Compressor { threshold_db: -34.0, ratio: 8.0 }, [690.0, 240.0]);
+        // Crushed on purpose: this branch only ever sits well under the dry one,
+        // which is what parallel compression is - density from underneath rather
+        // than squashing the signal you actually hear.
+        let comp = g.add_node(
+            P::Compressor {
+                threshold_db: -34.0,
+                ratio: 8.0,
+                knee_db: 4.0,
+                attack_ms: 5.0,
+                release_ms: 120.0,
+                makeup_db: 0.0,
+                mix: 1.0,
+            },
+            [690.0, 240.0],
+        );
         let comp_lvl = g.add_node(P::Gain { gain_db: -7.0 }, [860.0, 240.0]);
-        let sat = g.add_node(P::Saturator { drive: 4.0, mix: 1.0 }, [690.0, 380.0]);
-        let sat_lvl = g.add_node(P::Gain { gain_db: -12.0 }, [860.0, 380.0]);
+        let sat = g.add_node(P::Saturator { drive: 3.0, mix: 1.0 }, [690.0, 380.0]);
+        let sat_lvl = g.add_node(P::Gain { gain_db: -14.0 }, [860.0, 380.0]);
         // Blend the branches, then finish.
         let mix = g.add_node(P::Mix { gain_db: 0.0 }, [1040.0, 240.0]);
-        let eq = g.add_node(P::Eq { low_db: 1.0, mid_db: 1.5, high_db: 2.0 }, [1210.0, 240.0]);
-        let limiter = g.add_node(P::Limiter { ceiling_db: -1.0 }, [1380.0, 240.0]);
+        let eq = g.add_node(
+            P::Eq {
+                low_db: 1.0,
+                mid_db: 1.5,
+                high_db: 2.0,
+                low_hz: default_low_hz(),
+                mid_hz: default_mid_hz(),
+                mid_q: default_mid_q(),
+                high_hz: default_high_hz(),
+            },
+            [1210.0, 240.0],
+        );
+        let limiter = g.add_node(
+            P::Limiter {
+                ceiling_db: -1.0,
+                lookahead_ms: default_limiter_lookahead(),
+                release_ms: default_limiter_release(),
+            },
+            [1380.0, 240.0],
+        );
         let output = g.add_node(P::Output, [1550.0, 240.0]);
 
         g.connect(input, hpf);
@@ -528,6 +709,24 @@ impl Graph {
     }
 }
 
+/// Delay a single node adds, in samples. Kept in step with each processor's own
+/// `latency_samples`, but computable from parameters alone so the UI can report
+/// the total without reaching into the audio thread.
+fn node_latency(params: &NodeParams) -> usize {
+    let ms_to_samples = |ms: f32| (ms.max(0.0) * 0.001 * SAMPLE_RATE as f32) as usize;
+    match params {
+        NodeParams::Denoise => Denoise::latency(),
+        NodeParams::Gate { lookahead_ms, .. } => ms_to_samples(*lookahead_ms),
+        NodeParams::Limiter { lookahead_ms, .. } => ms_to_samples(*lookahead_ms).max(1),
+        NodeParams::Saturator { .. } => Saturator::latency(),
+        // One analysis frame each, matching the sizes used to build them.
+        NodeParams::Pitch { .. } => 1024,
+        NodeParams::PitchShift { .. } => 2048,
+        NodeParams::Autotune { .. } => crate::dsp::psola::latency_for(SAMPLE_RATE),
+        _ => 0,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Runtime
 // ---------------------------------------------------------------------------
@@ -535,7 +734,7 @@ impl Graph {
 /// Stateful DSP for one node.
 enum NodeProc {
     Passthrough,
-    HighPass(Biquad),
+    HighPass(HighPass),
     Denoise(Box<Denoise>),
     Gate { gate: Gate, vad_gate: bool },
     DeEsser(DeEsser),
@@ -563,8 +762,8 @@ impl NodeProc {
             NodeParams::Input | NodeParams::Output | NodeParams::Vst3 { .. } => {
                 NodeProc::Passthrough
             }
-            NodeParams::HighPass { cutoff_hz } => {
-                NodeProc::HighPass(Biquad::highpass(SAMPLE_RATE, cutoff_hz, 0.707))
+            NodeParams::HighPass { cutoff_hz, steep } => {
+                NodeProc::HighPass(HighPass::new(SAMPLE_RATE, cutoff_hz, steep))
             }
             NodeParams::Denoise => NodeProc::Denoise(Box::new(Denoise::new())),
             NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms } => {
@@ -573,14 +772,31 @@ impl NodeProc {
                     vad_gate,
                 }
             }
-            NodeParams::DeEsser { threshold_db, ratio, split_hz } => {
-                NodeProc::DeEsser(DeEsser::new(SAMPLE_RATE, split_hz, threshold_db, ratio))
+            NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db } => {
+                NodeProc::DeEsser(DeEsser::new(SAMPLE_RATE, split_hz, threshold_db, ratio, range_db))
             }
-            NodeParams::Compressor { threshold_db, ratio } => {
-                NodeProc::Compressor(Compressor::new(SAMPLE_RATE, threshold_db, ratio, 10.0, 80.0, 0.0))
-            }
-            NodeParams::Eq { low_db, mid_db, high_db } => {
-                NodeProc::Eq(Eq::new(SAMPLE_RATE, low_db, mid_db, high_db))
+            NodeParams::Compressor {
+                threshold_db,
+                ratio,
+                knee_db,
+                attack_ms,
+                release_ms,
+                makeup_db,
+                mix,
+            } => NodeProc::Compressor(Compressor::new(
+                SAMPLE_RATE,
+                threshold_db,
+                ratio,
+                knee_db,
+                attack_ms,
+                release_ms,
+                makeup_db,
+                mix,
+            )),
+            NodeParams::Eq { low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz } => {
+                NodeProc::Eq(Eq::new(
+                    SAMPLE_RATE, low_db, low_hz, mid_db, mid_hz, mid_q, high_db, high_hz,
+                ))
             }
             NodeParams::Saturator { drive, mix } => NodeProc::Saturator(Saturator::new(drive, mix)),
             NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants } => {
@@ -595,14 +811,13 @@ impl NodeProc {
                     SAMPLE_RATE, 2048, 8, pitch_semitones, formant_semitones, mix, preserve_formants,
                 )))
             }
-            NodeParams::Autotune { key, scale, strength, speed_ms, preserve_formants, ref_a } => {
+            NodeParams::Autotune { key, scale, strength, speed_ms, ref_a } => {
                 NodeProc::Autotune(Box::new(Autotune::new(
                     SAMPLE_RATE,
                     key,
                     scale,
                     strength,
                     speed_ms,
-                    preserve_formants,
                     ref_a,
                 )))
             }
@@ -615,8 +830,8 @@ impl NodeProc {
             NodeParams::Chorus { depth_ms, rate_hz, mix } => {
                 NodeProc::Chorus(Chorus::new(SAMPLE_RATE, depth_ms, rate_hz, mix))
             }
-            NodeParams::Limiter { ceiling_db } => {
-                NodeProc::Limiter(Limiter::new(SAMPLE_RATE, ceiling_db))
+            NodeParams::Limiter { ceiling_db, lookahead_ms, release_ms } => {
+                NodeProc::Limiter(Limiter::new(SAMPLE_RATE, ceiling_db, lookahead_ms, release_ms))
             }
             NodeParams::Gain { gain_db } => NodeProc::Gain(crate::dsp::db_to_lin(gain_db)),
             NodeParams::Makeup { gain_db } => NodeProc::Makeup(crate::dsp::db_to_lin(gain_db)),
@@ -650,8 +865,8 @@ impl NodeProc {
     /// Update params in place where possible (preserving filter state).
     fn set_params(&mut self, params: &NodeParams) {
         match (self, params) {
-            (NodeProc::HighPass(b), NodeParams::HighPass { cutoff_hz }) => {
-                *b = Biquad::highpass(SAMPLE_RATE, *cutoff_hz, 0.707);
+            (NodeProc::HighPass(b), NodeParams::HighPass { cutoff_hz, steep }) => {
+                *b = HighPass::new(SAMPLE_RATE, *cutoff_hz, *steep);
             }
             (
                 NodeProc::Gate { gate, vad_gate },
@@ -660,15 +875,31 @@ impl NodeProc {
                 gate.configure(*threshold_db, *range_db, *attack_ms, *hold_ms, *release_ms, *lookahead_ms);
                 *vad_gate = *vg;
             }
-            (NodeProc::DeEsser(d), NodeParams::DeEsser { threshold_db, ratio, split_hz }) => {
-                d.configure(*split_hz, *threshold_db, *ratio);
+            (
+                NodeProc::DeEsser(d),
+                NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db },
+            ) => {
+                d.configure(*split_hz, *threshold_db, *ratio, *range_db);
             }
-            (NodeProc::Compressor(c), NodeParams::Compressor { threshold_db, ratio }) => {
-                c.set_threshold_db(*threshold_db);
-                c.set_ratio(*ratio);
+            (
+                NodeProc::Compressor(c),
+                NodeParams::Compressor {
+                    threshold_db,
+                    ratio,
+                    knee_db,
+                    attack_ms,
+                    release_ms,
+                    makeup_db,
+                    mix,
+                },
+            ) => {
+                c.configure(*threshold_db, *ratio, *knee_db, *attack_ms, *release_ms, *makeup_db, *mix);
             }
-            (NodeProc::Eq(eq), NodeParams::Eq { low_db, mid_db, high_db }) => {
-                eq.set_gains(*low_db, *mid_db, *high_db);
+            (
+                NodeProc::Eq(eq),
+                NodeParams::Eq { low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz },
+            ) => {
+                eq.set_bands(*low_db, *low_hz, *mid_db, *mid_hz, *mid_q, *high_db, *high_hz);
             }
             (NodeProc::Saturator(s), NodeParams::Saturator { drive, mix }) => {
                 s.configure(*drive, *mix);
@@ -677,8 +908,11 @@ impl NodeProc {
             | (NodeProc::PitchShift(p), NodeParams::PitchShift { pitch_semitones, formant_semitones, mix, preserve_formants }) => {
                 p.configure(*pitch_semitones, *formant_semitones, *mix, *preserve_formants);
             }
-            (NodeProc::Autotune(a), NodeParams::Autotune { key, scale, strength, speed_ms, preserve_formants, ref_a }) => {
-                a.configure(*key, *scale, *strength, *speed_ms, *preserve_formants, *ref_a);
+            (
+                NodeProc::Autotune(a),
+                NodeParams::Autotune { key, scale, strength, speed_ms, ref_a },
+            ) => {
+                a.configure(*key, *scale, *strength, *speed_ms, *ref_a);
             }
             (NodeProc::Reverb(r), NodeParams::Reverb { room_size, damping, mix }) => {
                 r.configure(*room_size, *damping, *mix);
@@ -689,8 +923,11 @@ impl NodeProc {
             (NodeProc::Chorus(c), NodeParams::Chorus { depth_ms, rate_hz, mix }) => {
                 c.configure(*depth_ms, *rate_hz, *mix);
             }
-            (NodeProc::Limiter(l), NodeParams::Limiter { ceiling_db }) => {
-                l.configure(*ceiling_db);
+            (
+                NodeProc::Limiter(l),
+                NodeParams::Limiter { ceiling_db, lookahead_ms, release_ms },
+            ) => {
+                l.configure(*ceiling_db, *lookahead_ms, *release_ms);
             }
             (NodeProc::Gain(g), NodeParams::Gain { gain_db }) => {
                 *g = crate::dsp::db_to_lin(*gain_db);
@@ -1118,6 +1355,111 @@ mod tests {
         // `#[serde(default)]` on Graph fills it instead of failing the load.
         let g: Graph = ron::from_str("(nodes: [], connections: [])").expect("should load");
         assert!(g.nodes.is_empty());
+    }
+
+    /// Files written by the previous release must still load. Every field added
+    /// in the DSP quality pass has to fall back to a sensible default, and the
+    /// one field that was *removed* (autotune's formant switch, now inherent)
+    /// has to be tolerated rather than rejected.
+    #[test]
+    fn loads_a_graph_saved_before_the_dsp_overhaul() {
+        let old = r#"(
+            nodes: [
+                (id: 1, params: Input, bypass: false, pos: (0.0, 0.0)),
+                (id: 2, params: HighPass(cutoff_hz: 80.0), bypass: false, pos: (1.0, 0.0)),
+                (id: 3, params: DeEsser(threshold_db: -28.0, ratio: 4.0, split_hz: 6500.0), bypass: false, pos: (2.0, 0.0)),
+                (id: 4, params: Compressor(threshold_db: -18.0, ratio: 3.0), bypass: false, pos: (3.0, 0.0)),
+                (id: 5, params: Eq(low_db: 1.0, mid_db: 0.0, high_db: 2.0), bypass: false, pos: (4.0, 0.0)),
+                (id: 6, params: Autotune(key: 2, scale: Minor, strength: 0.8, speed_ms: 30.0, preserve_formants: true, ref_a: 440.0), bypass: false, pos: (5.0, 0.0)),
+                (id: 7, params: Limiter(ceiling_db: -1.0), bypass: false, pos: (6.0, 0.0)),
+                (id: 8, params: Output, bypass: false, pos: (7.0, 0.0)),
+            ],
+            connections: [(from: 1, to: 2), (from: 2, to: 8)],
+            next_id: 9,
+        )"#;
+        let g: Graph = ron::from_str(old).expect("an older graph should still load");
+        assert_eq!(g.nodes.len(), 8);
+
+        match g.node(2).unwrap().params {
+            NodeParams::HighPass { cutoff_hz, steep } => {
+                assert_eq!(cutoff_hz, 80.0);
+                assert!(steep, "older high-pass should adopt the steeper default");
+            }
+            ref other => panic!("wrong node: {other:?}"),
+        }
+        match g.node(3).unwrap().params {
+            NodeParams::DeEsser { range_db, split_hz, .. } => {
+                assert_eq!(split_hz, 6500.0);
+                assert_eq!(range_db, default_deess_range());
+            }
+            ref other => panic!("wrong node: {other:?}"),
+        }
+        match g.node(4).unwrap().params {
+            NodeParams::Compressor { threshold_db, ratio, knee_db, attack_ms, release_ms, makeup_db, mix } => {
+                assert_eq!((threshold_db, ratio), (-18.0, 3.0));
+                assert_eq!(knee_db, default_knee());
+                assert_eq!(attack_ms, default_comp_attack());
+                assert_eq!(release_ms, default_comp_release());
+                assert_eq!(makeup_db, 0.0);
+                assert_eq!(mix, 1.0, "an old compressor must stay fully wet");
+            }
+            ref other => panic!("wrong node: {other:?}"),
+        }
+        match g.node(5).unwrap().params {
+            NodeParams::Eq { low_db, high_db, low_hz, mid_hz, mid_q, high_hz, .. } => {
+                assert_eq!((low_db, high_db), (1.0, 2.0));
+                // The old EQ's fixed centers become the new defaults, so the
+                // preset still sounds the way its author left it.
+                assert_eq!(low_hz, default_low_hz());
+                assert_eq!(mid_hz, default_mid_hz());
+                assert_eq!(mid_q, default_mid_q());
+                assert_eq!(high_hz, default_high_hz());
+            }
+            ref other => panic!("wrong node: {other:?}"),
+        }
+        match g.node(6).unwrap().params {
+            // The dropped `preserve_formants` field must be ignored, not fatal.
+            NodeParams::Autotune { key, strength, .. } => {
+                assert_eq!(key, 2);
+                assert_eq!(strength, 0.8);
+            }
+            ref other => panic!("wrong node: {other:?}"),
+        }
+        match g.node(7).unwrap().params {
+            NodeParams::Limiter { ceiling_db, lookahead_ms, release_ms } => {
+                assert_eq!(ceiling_db, -1.0);
+                assert_eq!(lookahead_ms, default_limiter_lookahead());
+                assert_eq!(release_ms, default_limiter_release());
+            }
+            ref other => panic!("wrong node: {other:?}"),
+        }
+
+        // And it has to actually run.
+        let mut proc = GraphProcessor::new(&g);
+        let input: Vec<f32> = (0..480).map(|n| 0.3 * (n as f32 * 0.05).sin()).collect();
+        let mut out = vec![0.0; 480];
+        proc.process(&input, &mut out);
+        assert!(out.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn reports_the_delay_the_chain_adds() {
+        let g = Graph::default_chain();
+        let total = g.latency_samples();
+        assert!(total > 0, "noise reduction and the gate both cost time");
+
+        let ms = total as f32 / SAMPLE_RATE as f32 * 1000.0;
+        assert!(ms < 30.0, "the default chain must stay comfortable to monitor live: {ms} ms");
+
+        // Bypassing a node takes its delay out of the total.
+        let denoise = g.nodes.iter().find(|n| n.params.kind() == NodeKind::Denoise).unwrap().id;
+        let mut bypassed = g.clone();
+        bypassed.node_mut(denoise).unwrap().bypass = true;
+        assert_eq!(
+            bypassed.latency_samples(),
+            total - Denoise::latency(),
+            "a bypassed node should not be charged for"
+        );
     }
 
     #[test]

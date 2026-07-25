@@ -1,14 +1,12 @@
-//! Presets: a named snapshot of the full chain parameters.
+//! Presets: a named snapshot of the whole signal graph.
 //!
-//! Stored as RON under `%APPDATA%\Formant\presets`. When the node-graph editor
-//! lands (Phase 2) this grows into a serialized graph; for now it's the flat
-//! [`ChainParams`] set.
+//! Stored as RON under `%APPDATA%\Formant\presets`.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::graph::Graph;
+use crate::graph::{Graph, NodeKind, NodeParams};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)] // tolerate fields added in newer versions
@@ -66,11 +64,19 @@ impl Preset {
         Ok(())
     }
 
-    /// The presets shipped with Formant: a standard single-chain vocal preset and
-    /// a parallel-routing showcase (parallel compression + blend-in saturation).
+    /// The presets shipped with Formant.
+    ///
+    /// These are deliberately restrained. It is tempting to ship something that
+    /// sounds impressive the instant you speak, but heavy compression and thick
+    /// saturation stop being impressive about a minute in, and they can't be
+    /// undone further down the chain. Each of these leaves headroom and keeps
+    /// the voice recognizable.
     pub fn factory() -> Vec<Preset> {
         vec![
             Preset::new("Standard Vocal", Graph::default_chain()),
+            Preset::new("Broadcast", broadcast()),
+            Preset::new("Warm", warm()),
+            Preset::new("Podcast", podcast()),
             Preset::new("Parallel Vibe", Graph::parallel_demo()),
         ]
     }
@@ -106,6 +112,95 @@ impl Preset {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Factory preset chains
+// ---------------------------------------------------------------------------
+
+/// The cleanup every voice chain starts with: rumble filter, noise reduction,
+/// and a gate. Nothing here is a matter of taste.
+fn front_end(hpf_hz: f32) -> Vec<NodeParams> {
+    vec![
+        NodeParams::HighPass { cutoff_hz: hpf_hz, steep: true },
+        NodeKind::Denoise.default_params(),
+        NodeKind::Gate.default_params(),
+    ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eq(
+    low_db: f32,
+    low_hz: f32,
+    mid_db: f32,
+    mid_hz: f32,
+    mid_q: f32,
+    high_db: f32,
+    high_hz: f32,
+) -> NodeParams {
+    NodeParams::Eq { low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn comp(
+    threshold_db: f32,
+    ratio: f32,
+    knee_db: f32,
+    attack_ms: f32,
+    release_ms: f32,
+    makeup_db: f32,
+    mix: f32,
+) -> NodeParams {
+    NodeParams::Compressor { threshold_db, ratio, knee_db, attack_ms, release_ms, makeup_db, mix }
+}
+
+fn deess(threshold_db: f32, ratio: f32, split_hz: f32, range_db: f32) -> NodeParams {
+    NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db }
+}
+
+fn limiter(ceiling_db: f32) -> NodeParams {
+    NodeParams::Limiter { ceiling_db, lookahead_ms: 2.0, release_ms: 100.0 }
+}
+
+/// Tight, present, and controlled - the sound of someone reading the news.
+/// Firmer compression than the others, with the presence lift that carries a
+/// voice through small speakers.
+fn broadcast() -> Graph {
+    let mut chain = front_end(90.0);
+    chain.extend([
+        deess(-30.0, 5.0, 6800.0, 8.0),
+        comp(-22.0, 3.0, 8.0, 8.0, 100.0, 3.0, 1.0),
+        eq(1.0, 110.0, 2.5, 3500.0, 1.0, 2.0, 10_000.0),
+        limiter(-1.0),
+    ]);
+    Graph::linear(chain)
+}
+
+/// Fuller and softer. A little parallel compression for body rather than
+/// clamping, gentle saturation for harmonic warmth, and the top eased off.
+fn warm() -> Graph {
+    let mut chain = front_end(70.0);
+    chain.extend([
+        deess(-26.0, 3.5, 7000.0, 6.0),
+        comp(-24.0, 2.5, 10.0, 15.0, 150.0, 3.0, 0.8),
+        NodeParams::Saturator { drive: 2.2, mix: 0.3 },
+        eq(2.5, 140.0, -1.5, 800.0, 1.2, -1.0, 9_000.0),
+        limiter(-1.0),
+    ]);
+    Graph::linear(chain)
+}
+
+/// Even and intelligible over long stretches, with tighter noise control and
+/// enough makeup gain to land near streaming loudness targets.
+fn podcast() -> Graph {
+    let mut chain = front_end(95.0);
+    chain.extend([
+        deess(-28.0, 5.0, 6800.0, 10.0),
+        comp(-26.0, 3.5, 6.0, 10.0, 90.0, 5.0, 1.0),
+        eq(0.0, 120.0, 1.5, 2800.0, 1.0, 1.5, 11_000.0),
+        limiter(-1.5),
+    ]);
+    Graph::linear(chain)
+}
+
 /// Make a preset name safe for a filename.
 fn sanitize(name: &str) -> String {
     name.chars()
@@ -130,6 +225,51 @@ mod tests {
         for preset in Preset::factory() {
             let back = Preset::from_ron(&preset.to_ron().unwrap()).unwrap();
             assert_eq!(preset, back, "factory preset '{}' must survive RON", preset.name);
+        }
+    }
+
+    /// Every shipped preset has to be a working chain, not just valid data.
+    #[test]
+    fn factory_presets_process_audio_cleanly() {
+        use crate::graph::GraphProcessor;
+        for preset in Preset::factory() {
+            let mut proc = GraphProcessor::new(&preset.graph);
+            let input: Vec<f32> = (0..4800)
+                .map(|n| 0.4 * (n as f32 * 0.06).sin() + 0.05 * (n as f32 * 0.9).sin())
+                .collect();
+            let mut out = vec![0.0; 4800];
+            // A few blocks, so the dynamics settle rather than staying at rest.
+            for _ in 0..4 {
+                proc.process(&input, &mut out);
+            }
+            assert!(
+                out.iter().all(|x| x.is_finite()),
+                "preset '{}' produced non-finite output",
+                preset.name
+            );
+            assert!(
+                out.iter().all(|x| x.abs() <= 1.0),
+                "preset '{}' exceeded full scale",
+                preset.name
+            );
+        }
+    }
+
+    /// Presets ending in a limiter must respect their ceiling even when driven
+    /// well past it.
+    #[test]
+    fn factory_presets_hold_their_ceiling_when_slammed() {
+        use crate::graph::GraphProcessor;
+        for preset in Preset::factory() {
+            let mut proc = GraphProcessor::new(&preset.graph);
+            let input: Vec<f32> = (0..4800).map(|n| 0.99 * (n as f32 * 0.07).sin()).collect();
+            let mut out = vec![0.0; 4800];
+            let mut peak = 0.0f32;
+            for _ in 0..6 {
+                proc.process(&input, &mut out);
+                peak = peak.max(out.iter().fold(0.0f32, |m, v| m.max(v.abs())));
+            }
+            assert!(peak <= 1.0, "preset '{}' clipped at {peak}", preset.name);
         }
     }
 
