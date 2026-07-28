@@ -51,6 +51,13 @@ impl Biquad {
         Self::from_coeffs(b0, b1, b2, 1.0 + alpha, -2.0 * cos_w0, 1.0 - alpha)
     }
 
+    /// RBJ band-pass with constant 0 dB peak gain. Used to isolate a band for a
+    /// detector to look at, or to subtract back out of the signal.
+    pub fn bandpass(sample_rate: u32, center_hz: f32, q: f32) -> Self {
+        let (_, cos_w0, alpha) = rbj_terms(sample_rate, center_hz, q);
+        Self::from_coeffs(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos_w0, 1.0 - alpha)
+    }
+
     /// RBJ peaking EQ: `gain_db` boost/cut around `center_hz` with bandwidth `q`.
     pub fn peaking(sample_rate: u32, center_hz: f32, q: f32, gain_db: f32) -> Self {
         let a = 10f32.powf(gain_db / 40.0);
@@ -108,6 +115,54 @@ impl Biquad {
     }
 }
 
+/// Butterworth section Qs for a 4th-order (24 dB/octave) response.
+const BUTTERWORTH_4TH: [f32; 2] = [0.541_196_1, 1.306_562_9];
+
+/// A high-pass filter that can be one or two cascaded sections.
+///
+/// One section is 12 dB/octave, which is gentle enough that a good deal of
+/// rumble - desk thumps, footsteps, air conditioning - still leaks through just
+/// above the cutoff. Two Butterworth sections give 24 dB/octave, which clears it
+/// properly without having to push the cutoff up into the voice.
+#[derive(Debug, Clone)]
+pub struct HighPass {
+    first: Biquad,
+    second: Option<Biquad>,
+}
+
+impl HighPass {
+    /// Build at `cutoff_hz`. `steep` selects 24 dB/octave over 12.
+    pub fn new(sample_rate: u32, cutoff_hz: f32, steep: bool) -> Self {
+        if steep {
+            Self {
+                first: Biquad::highpass(sample_rate, cutoff_hz, BUTTERWORTH_4TH[0]),
+                second: Some(Biquad::highpass(sample_rate, cutoff_hz, BUTTERWORTH_4TH[1])),
+            }
+        } else {
+            Self {
+                first: Biquad::highpass(sample_rate, cutoff_hz, std::f32::consts::FRAC_1_SQRT_2),
+                second: None,
+            }
+        }
+    }
+
+    #[inline]
+    pub fn process(&mut self, x: Sample) -> Sample {
+        let y = self.first.process(x);
+        match &mut self.second {
+            Some(s) => s.process(y),
+            None => y,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.first.reset();
+        if let Some(s) = &mut self.second {
+            s.reset();
+        }
+    }
+}
+
 /// Shared RBJ intermediate terms: `(sin w0, cos w0, alpha)`.
 fn rbj_terms(sample_rate: u32, freq_hz: f32, q: f32) -> (f32, f32, f32) {
     let w0 = std::f32::consts::TAU * freq_hz / sample_rate as f32;
@@ -154,6 +209,47 @@ mod tests {
         let mut eq = Biquad::peaking(SAMPLE_RATE, 3000.0, 1.0, 6.0);
         // +6 dB ~= x2 amplitude at the center frequency.
         assert!(tone_peak(&mut eq, 3000.0) > 1.5);
+    }
+
+    #[test]
+    fn bandpass_passes_its_center_and_rejects_the_rest() {
+        let mut bp = Biquad::bandpass(SAMPLE_RATE, 6500.0, 1.2);
+        assert!(tone_peak(&mut bp, 6500.0) > 0.9, "center should pass at ~unity");
+        let mut bp = Biquad::bandpass(SAMPLE_RATE, 6500.0, 1.2);
+        assert!(tone_peak(&mut bp, 200.0) < 0.1, "low end should be rejected");
+        let mut bp = Biquad::bandpass(SAMPLE_RATE, 6500.0, 1.2);
+        assert!(tone_peak(&mut bp, 18_000.0) < 0.5, "far top should be rolled off");
+    }
+
+    #[test]
+    fn steep_highpass_rejects_rumble_harder_than_gentle() {
+        // An octave below the cutoff: 12 dB/oct gives ~12 dB down, 24 gives ~24.
+        let mut gentle = HighPass::new(SAMPLE_RATE, 80.0, false);
+        let mut steep = HighPass::new(SAMPLE_RATE, 80.0, true);
+        let (mut g_peak, mut s_peak) = (0.0f32, 0.0f32);
+        for n in 0..SAMPLE_RATE {
+            let t = n as f32 / SAMPLE_RATE as f32;
+            let x = (TAU * 40.0 * t).sin();
+            let g = gentle.process(x);
+            let s = steep.process(x);
+            if n > 4800 {
+                g_peak = g_peak.max(g.abs());
+                s_peak = s_peak.max(s.abs());
+            }
+        }
+        assert!(s_peak < g_peak * 0.6, "steep should reject far more: {g_peak} vs {s_peak}");
+
+        // Both must leave the voice band alone.
+        let mut steep = HighPass::new(SAMPLE_RATE, 80.0, true);
+        let mut voice = 0.0f32;
+        for n in 0..SAMPLE_RATE {
+            let t = n as f32 / SAMPLE_RATE as f32;
+            let y = steep.process((TAU * 1000.0 * t).sin());
+            if n > 4800 {
+                voice = voice.max(y.abs());
+            }
+        }
+        assert!(voice > 0.95, "steep high-pass thinned the voice band: {voice}");
     }
 
     #[test]

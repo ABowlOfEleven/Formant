@@ -29,6 +29,11 @@ pub struct Denoise {
 }
 
 impl Denoise {
+    /// One RNNoise frame of delay, which is inherent to the model.
+    pub const fn latency() -> usize {
+        FRAME
+    }
+
     pub fn new() -> Self {
         let mut out_buf = VecDeque::with_capacity(FRAME * 4);
         // Prime one frame of latency so output never starves input.

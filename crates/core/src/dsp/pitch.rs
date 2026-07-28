@@ -20,6 +20,14 @@ use crate::types::Sample;
 
 const TWO_PI: f32 = std::f32::consts::TAU;
 
+/// Fraction of the previous frame's energy that must appear as *new* energy for
+/// a frame to count as an attack.
+const TRANSIENT_FLUX: f32 = 0.35;
+
+/// Peaks below this fraction of the frame's loudest bin are ignored, so the
+/// noise floor doesn't get treated as a partial.
+const PEAK_FLOOR: f32 = 1e-3;
+
 /// Streaming pitch + formant shifter. Both shifts are expressed as ratios
 /// (`2.0` is one octave up).
 pub struct PitchShifter {
@@ -56,6 +64,15 @@ pub struct PitchShifter {
     ana_freq: Vec<f32>,
     syn_magn: Vec<f32>,
     syn_freq: Vec<f32>,
+    /// This frame's raw analysis phase, kept so locked bins can be given a
+    /// phase relative to their peak.
+    cur_phase: Vec<f32>,
+    /// Per-bin synthesis phase, written by the locking pass.
+    syn_phase: Vec<f32>,
+    /// Previous frame's magnitudes, for the spectral-flux transient detector.
+    prev_magn: Vec<f32>,
+    /// Spectral peak bins found this frame.
+    peaks: Vec<usize>,
     env: Vec<f32>,
     cepstrum: Vec<f32>,
     cep_spec: Vec<Complex<f32>>,
@@ -123,6 +140,10 @@ impl PitchShifter {
             ana_freq: vec![0.0; bins],
             syn_magn: vec![0.0; bins],
             syn_freq: vec![0.0; bins],
+            cur_phase: vec![0.0; bins],
+            syn_phase: vec![0.0; bins],
+            prev_magn: vec![0.0; bins],
+            peaks: Vec::with_capacity(bins / 2),
             env: vec![1.0; bins],
             cepstrum: vec![0.0; frame],
             cep_spec: vec![Complex::new(0.0, 0.0); bins],
@@ -194,6 +215,7 @@ impl PitchShifter {
             let (re, im) = (self.spectrum[k].re, self.spectrum[k].im);
             self.ana_magn[k] = (re * re + im * im).sqrt();
             let phase = im.atan2(re);
+            self.cur_phase[k] = phase;
             let mut delta = phase - self.last_phase[k];
             self.last_phase[k] = phase;
             delta -= k as f32 * self.expct;
@@ -203,33 +225,46 @@ impl PitchShifter {
             self.ana_freq[k] = (k as f32 + delta) * self.freq_per_bin;
         }
 
+        // Transient detection by spectral flux: a broadband jump in energy is a
+        // consonant or a pluck. Those are the moments a vocoder smears worst,
+        // because the accumulated phase describes a steady tone that no longer
+        // exists.
+        let transient = self.detect_transient();
+
         if (self.formant_eff - 1.0).abs() > 1e-3 {
             self.apply_formant_shift();
         }
 
-        // Pitch shift: move each partial to its scaled bin.
+        self.find_peaks();
+
         for v in self.syn_magn.iter_mut() {
             *v = 0.0;
         }
-        for v in self.syn_freq.iter_mut() {
-            *v = 0.0;
-        }
-        for k in 0..bins {
-            let index = (k as f32 * self.pitch).round() as usize;
-            if index < bins {
-                self.syn_magn[index] += self.ana_magn[k];
-                self.syn_freq[index] = self.ana_freq[k] * self.pitch;
+
+        if self.peaks.is_empty() {
+            // Nothing tonal to lock onto (noise, silence). Fall back to moving
+            // each bin on its own, which is all you can do without peaks.
+            for k in 0..bins {
+                let index = (k as f32 * self.pitch).round() as usize;
+                if index < bins {
+                    self.syn_magn[index] += self.ana_magn[k];
+                    self.syn_freq[index] = self.ana_freq[k] * self.pitch;
+                }
             }
+            for k in 0..bins {
+                let mut delta = self.syn_freq[k] / self.freq_per_bin - k as f32;
+                delta = TWO_PI * delta / self.osamp;
+                delta += k as f32 * self.expct;
+                self.sum_phase[k] += delta;
+                self.syn_phase[k] = self.sum_phase[k];
+            }
+        } else {
+            self.shift_peaks(transient);
         }
 
-        // Synthesis: rebuild phases from the shifted frequencies.
         for k in 0..bins {
             let magn = self.syn_magn[k];
-            let mut delta = self.syn_freq[k] / self.freq_per_bin - k as f32;
-            delta = TWO_PI * delta / self.osamp;
-            delta += k as f32 * self.expct;
-            self.sum_phase[k] += delta;
-            let phase = self.sum_phase[k];
+            let phase = self.syn_phase[k];
             self.spectrum[k] = Complex::new(magn * phase.cos(), magn * phase.sin());
         }
 
@@ -245,6 +280,101 @@ impl PitchShifter {
             *v = 0.0;
         }
         self.in_fifo.copy_within(hop.., 0);
+    }
+
+    /// Compare this frame's magnitudes with the last one. A large *rise* in
+    /// total energy means an attack; energy falling away does not.
+    fn detect_transient(&mut self) -> bool {
+        let mut flux = 0.0;
+        let mut previous = 0.0;
+        for k in 0..self.bins {
+            let rise = self.ana_magn[k] - self.prev_magn[k];
+            if rise > 0.0 {
+                flux += rise;
+            }
+            previous += self.prev_magn[k];
+        }
+        self.prev_magn.copy_from_slice(&self.ana_magn);
+        previous > 1e-6 && flux > TRANSIENT_FLUX * previous
+    }
+
+    /// Locate the spectral peaks - one per partial of the voice. Each peak owns
+    /// the bins around it, which together form that partial's main lobe.
+    fn find_peaks(&mut self) {
+        self.peaks.clear();
+        let max_magn = self.ana_magn.iter().fold(0.0f32, |m, &v| m.max(v));
+        if max_magn <= 0.0 {
+            return;
+        }
+        let floor = max_magn * PEAK_FLOOR;
+        for k in 2..self.bins.saturating_sub(2) {
+            let m = self.ana_magn[k];
+            if m > floor
+                && m > self.ana_magn[k - 1]
+                && m > self.ana_magn[k + 1]
+                && m > self.ana_magn[k - 2]
+                && m > self.ana_magn[k + 2]
+            {
+                self.peaks.push(k);
+            }
+        }
+    }
+
+    /// Move whole partials rather than individual bins, and keep the bins within
+    /// each partial phase-locked to their peak.
+    ///
+    /// This is what stops a shifted voice sounding watery. Advancing every bin's
+    /// phase independently, as the textbook vocoder does, destroys the fixed
+    /// phase relationships that hold a partial's main lobe together; the lobe
+    /// spreads out in time and you hear it as smeared and reverberant. Locking
+    /// each bin to its peak (Laroche and Dolson's identity locking) preserves
+    /// those relationships exactly.
+    ///
+    /// Translating the whole lobe by the same number of bins, instead of
+    /// rounding each bin's index separately, fixes the other half of the
+    /// problem: separate rounding lets several source bins collide into one
+    /// destination, where the last one to arrive overwrote the frequency of the
+    /// others.
+    fn shift_peaks(&mut self, transient: bool) {
+        let bins = self.bins;
+        for i in 0..self.peaks.len() {
+            let p = self.peaks[i];
+            // This peak owns the bins up to the midpoint of each neighbor.
+            let lo = if i == 0 { 0 } else { (self.peaks[i - 1] + p) / 2 + 1 };
+            let hi = if i + 1 == self.peaks.len() { bins - 1 } else { (p + self.peaks[i + 1]) / 2 };
+
+            let target = (p as f32 * self.pitch).round() as i32;
+            if target < 0 || target >= bins as i32 {
+                continue;
+            }
+            let target = target as usize;
+
+            // Advance the peak's own phase from its shifted frequency.
+            let mut delta = self.ana_freq[p] * self.pitch / self.freq_per_bin - target as f32;
+            delta = TWO_PI * delta / self.osamp;
+            delta += target as f32 * self.expct;
+            if transient {
+                // Re-anchor to the measured phase so the attack comes through
+                // sharp instead of being reconstructed from stale history.
+                self.sum_phase[target] = self.cur_phase[p];
+            } else {
+                self.sum_phase[target] += delta;
+            }
+            let peak_phase = self.sum_phase[target];
+
+            let shift = target as i32 - p as i32;
+            for k in lo..=hi.min(bins - 1) {
+                let dst = k as i32 + shift;
+                if dst < 0 || dst >= bins as i32 {
+                    continue;
+                }
+                let dst = dst as usize;
+                self.syn_magn[dst] += self.ana_magn[k];
+                // Hold this bin at the same phase offset from its peak that the
+                // analysis found.
+                self.syn_phase[dst] = peak_phase + (self.cur_phase[k] - self.cur_phase[p]);
+            }
+        }
     }
 
     /// Estimate the spectral envelope (cepstral smoothing) and warp it by the
@@ -293,11 +423,9 @@ mod tests {
         let sr = 48_000u32;
         let mut ps = PitchShifter::new(sr, 1024, 4, pitch_st, formant_st, 1.0, false);
         let n = 24_000usize;
-        let mut out = vec![0.0f32; n];
-        for i in 0..n {
-            let x = (TWO_PI * in_hz * i as f32 / sr as f32).sin();
-            out[i] = ps.process(x);
-        }
+        let out: Vec<f32> = (0..n)
+            .map(|i| ps.process((TWO_PI * in_hz * i as f32 / sr as f32).sin()))
+            .collect();
         let tail = &out[n / 2..];
         let mut crossings = 0;
         for w in tail.windows(2) {
@@ -326,6 +454,78 @@ mod tests {
         let f = dominant_freq_after_shift(300.0, 0.0, 5.0);
         assert!((f - 300.0).abs() < 25.0, "pitch moved with formant: {f}");
         assert!(f.is_finite());
+    }
+
+    /// Phase locking, measured. A shifted harmonic signal should put its energy
+    /// on the *new* harmonic series and nowhere else. Smearing and per-bin
+    /// collisions both dump energy into the gaps between partials, and leaking
+    /// unshifted content would show up at the original harmonics.
+    #[test]
+    fn shifted_partials_stay_concentrated() {
+        let sr = 48_000u32;
+        let f0 = 200.0;
+        let n = 96_000;
+        let mut ps = PitchShifter::new(sr, 2048, 8, 12.0, 0.0, 1.0, false);
+        let out: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / sr as f32;
+                let x: f32 =
+                    (1..=20).map(|h| (TWO_PI * f0 * h as f32 * t).sin() / h as f32).sum();
+                ps.process(0.3 * x)
+            })
+            .collect();
+        let tail = &out[n / 2..];
+
+        // Up an octave, so partials belong at 400, 800, 1200...
+        let on_partial = goertzel(tail, 400.0, sr as f32) + goertzel(tail, 800.0, sr as f32);
+        // 600 and 1000 are partials of the *original* series, not the shifted
+        // one, so they should be close to empty.
+        let between = goertzel(tail, 600.0, sr as f32) + goertzel(tail, 1000.0, sr as f32);
+        assert!(
+            on_partial > between * 4.0,
+            "energy leaked between partials: on {on_partial:.5} vs between {between:.5}"
+        );
+    }
+
+    /// Transient handling: a click must come out as a click. Crest factor (peak
+    /// over RMS) is exactly the measure of that - smearing an impulse across the
+    /// analysis frame lowers the peak and raises the RMS.
+    #[test]
+    fn transients_stay_sharp() {
+        let sr = 48_000u32;
+        let n = 48_000usize;
+        let mut input = vec![0.0f32; n];
+        for i in (4_000..n).step_by(6_000) {
+            input[i] = 1.0;
+        }
+        // Shift for real, so the vocoder is actually rebuilding the signal
+        // rather than passing it through nearly untouched.
+        let mut ps = PitchShifter::new(sr, 2048, 8, 5.0, 0.0, 1.0, false);
+        let out: Vec<f32> = input.iter().map(|&x| ps.process(x)).collect();
+
+        let crest = |v: &[f32]| {
+            let peak = v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+            let rms = (v.iter().map(|x| (x * x) as f64).sum::<f64>() / v.len() as f64).sqrt();
+            peak / (rms as f32).max(1e-9)
+        };
+        let before = crest(&input[8_000..]);
+        let after = crest(&out[8_000..]);
+        assert!(
+            after > before * 0.25,
+            "clicks were smeared: crest {after:.1} vs input {before:.1}"
+        );
+    }
+
+    fn goertzel(x: &[f32], freq: f32, sr: f32) -> f32 {
+        let w = TWO_PI * freq / sr;
+        let coeff = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for &v in x {
+            let s0 = v + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - coeff * s1 * s2).sqrt() / x.len() as f32
     }
 
     #[test]

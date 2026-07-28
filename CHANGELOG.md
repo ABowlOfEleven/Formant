@@ -3,16 +3,61 @@
 All notable changes to Formant are recorded here. The format is based on Keep a
 Changelog, and the project follows semantic versioning.
 
-## [Unreleased]
+## [0.4.0]
+
+A quality pass over the whole signal chain. Existing presets and sessions keep
+working: every new setting defaults to the behavior you already had.
 
 ### Added
 
 - A new, higher-quality Pitch node (bigger analysis frame and much more overlap,
   with formant preservation) for cleaner, more natural pitch and formant shifts.
-  Autotune uses the same improved engine.
+- Nonlinear stages now run oversampled. Saturation used to fold the harmonics it
+  created back down into the audible range as content unrelated to your voice,
+  which is the harsh, metallic edge that made it sound digital. Those harmonics
+  now have somewhere to go and are filtered out before they can fold.
+- The compressor gained knee, attack, release, makeup, and mix controls. Mix
+  below 1.0 gives you parallel compression, where the loud parts are controlled
+  but the quiet detail stays untouched.
+- The EQ is fully parametric: every band has its own frequency, and the mid band
+  has a Q. Boxiness sits at a different frequency on every microphone, and a
+  fixed 3 kHz bell could not reach it.
+- The high-pass filter can run at 24 dB/octave instead of 12, so rumble just
+  below the cutoff is actually gone rather than merely quieter.
+- The de-esser gained a range control, capping how far it can pull sibilance down
+  so a hard "sss" cannot punch a hole in the sound.
+- The limiter gained lookahead and release controls.
+- Three factory presets: Broadcast, Warm, and Podcast.
+- The Mixer shows how much delay your chain is adding, so you can tell at a
+  glance whether monitoring yourself will feel immediate.
 
 ### Changed
 
+- Autotune is rebuilt on TD-PSOLA instead of the phase vocoder. It now moves
+  grains of your actual waveform rather than rebuilding the sound from moved
+  frequency bins, so corrected singing keeps your vocal character instead of
+  going watery. Formants are preserved inherently, so the formant switch is gone.
+  Unvoiced sounds pass through untouched, which keeps consonants intact.
+- Pitch detection is much steadier: it now reports a confidence, filters out
+  isolated octave errors, and holds a note through brief weak patches. Autotune
+  no longer warbles when the detector was unsure.
+- The Pitch and Warp nodes keep partials phase-locked to their spectral peaks and
+  reset phase on transients. This removes most of the smeared, underwater quality
+  that shifted voices had, and stops consonants going mushy.
+- The compressor measures loudness (RMS) rather than the raw waveform, and has a
+  soft knee and a program-dependent release. Reading the waveform sample by
+  sample made the gain wobble within every cycle of a low voice, which is the
+  grabby, buzzy quality of a cheap compressor.
+- The limiter looks ahead a couple of milliseconds and turns the gain down before
+  a peak arrives, instead of clamping the waveform flat when it gets there. It
+  also detects peaks that fall between samples, so nothing overshoots after
+  conversion. Plosives no longer distort.
+- The de-esser now ducks a band around your sibilance rather than everything
+  above a crossover, so heavy de-essing no longer dulls the air in your voice.
+  When it is not working it is transparent, exactly.
+- Default settings are more restrained. The stock compressor is gentler and the
+  stock saturation is lighter, on the theory that a preset which sounds
+  impressive for one minute is not what you want for an hour.
 - The original phase-vocoder shifter is kept as a separate "Warp" node. Its
   grainier, more effected character is good for robotic and glitchy voices.
 - On first run, Formant now adopts the system default microphone and playback
@@ -167,6 +212,7 @@ First public release.
 - Two factory presets shipped on first run: Standard Vocal and Parallel Vibe.
 - A per-user script installer, a portable zip, and an MSI installer.
 
+[0.4.0]: https://github.com/ABowlOfEleven/Formant/releases/tag/v0.4.0
 [0.3.1]: https://github.com/ABowlOfEleven/Formant/releases/tag/v0.3.1
 [0.3.0]: https://github.com/ABowlOfEleven/Formant/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ABowlOfEleven/Formant/releases/tag/v0.2.0
