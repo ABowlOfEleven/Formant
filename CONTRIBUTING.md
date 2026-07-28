@@ -1,40 +1,41 @@
 # Contributing to Formant
 
-Thanks for your interest in Formant. It is a small, focused project, and
+Thank you for your interest in Formant. This is a small, focused project, and
 contributions are welcome.
 
-## Getting set up
+## Setup
 
-Formant is a Rust workspace. You need a recent stable Rust toolchain and, since
-it is Windows-only, a Windows machine to run it.
+Formant is a Rust workspace. You need a recent stable Rust toolchain. Formant
+runs on Windows only, so you also need a Windows machine.
 
 ```sh
 cargo test                              # core DSP, engine, and preset tests
-cargo run -p formant -- --seconds 5     # headless: stream mic through the chain
+cargo run -p formant -- --seconds 5     # headless: stream the microphone through the chain
 cargo run -p formant                    # the full GUI
 ```
 
-The `formant-core` crate is pure and fully testable without an audio device, so
-most logic can be developed and tested without hardware. The audio, VST3, and app
-crates build on top of it.
+The `formant-core` crate is pure and its tests need no audio device. You can
+write and test most logic without hardware. The audio, VST3, and app crates
+depend on that core.
 
 ## Before you open a pull request
 
-- Run `cargo test` and `cargo build --workspace` and make sure both pass. CI runs
-  the same on Windows.
-- Run `cargo fmt` and keep `cargo clippy` clean.
-- Match the surrounding style. In particular, keep public-facing text and code
-  comments in plain ASCII punctuation (no em-dashes), to match the rest of the
-  project.
-- Keep changes focused. Small, single-purpose pull requests are easier to review.
+1. Run `cargo test` and `cargo build --workspace`. Make sure both pass. CI runs
+   the same two commands on Windows.
+2. Run `cargo fmt`.
+3. Keep `cargo clippy` clean.
+4. Match the surrounding style. Keep public text and code comments in plain ASCII
+   punctuation, with no em-dashes.
+5. Keep each change focused. A small, single-purpose pull request is easier to
+   review.
 
 ## Reporting bugs
 
-Open an issue with steps to reproduce, what you expected, and what happened. If
-the app crashed, attach the log from `%APPDATA%\Formant\log.txt`.
+Open an issue. Give the steps to reproduce the problem, the result that you
+expected, and the result that you got. If the app crashed, attach the log from
+`%APPDATA%\Formant\log.txt`.
 
 ## License
 
-Formant is licensed under the GNU General Public License v3 or later. By
-contributing, you agree that your contributions are licensed under the same
-terms.
+Formant uses the GNU General Public License, version 3 or later. If you
+contribute, you agree to license your contribution under the same terms.
