@@ -1,179 +1,186 @@
 # Changelog
 
-All notable changes to Formant are recorded here. The format is based on Keep a
-Changelog, and the project follows semantic versioning.
+This file records all notable changes to Formant. The format follows Keep a
+Changelog. The project uses semantic versioning.
 
 ## [0.4.0]
 
-A quality pass over the whole signal chain. Existing presets and sessions keep
-working: every new setting defaults to the behavior you already had.
+A quality pass over the whole signal chain. Existing presets and sessions
+continue to work. Every new setting defaults to the behavior that you already
+had.
 
 ### Added
 
-- A new, higher-quality Pitch node (bigger analysis frame and much more overlap,
-  with formant preservation) for cleaner, more natural pitch and formant shifts.
-- Nonlinear stages now run oversampled. Saturation used to fold the harmonics it
-  created back down into the audible range as content unrelated to your voice,
-  which is the harsh, metallic edge that made it sound digital. Those harmonics
-  now have somewhere to go and are filtered out before they can fold.
-- The compressor gained knee, attack, release, makeup, and mix controls. Mix
-  below 1.0 gives you parallel compression, where the loud parts are controlled
-  but the quiet detail stays untouched.
-- The EQ is fully parametric: every band has its own frequency, and the mid band
-  has a Q. Boxiness sits at a different frequency on every microphone, and a
-  fixed 3 kHz bell could not reach it.
-- The high-pass filter can run at 24 dB/octave instead of 12, so rumble just
-  below the cutoff is actually gone rather than merely quieter.
-- The de-esser gained a range control, capping how far it can pull sibilance down
-  so a hard "sss" cannot punch a hole in the sound.
-- The limiter gained lookahead and release controls.
+- A new Pitch node with higher quality. It uses a larger analysis frame, much
+  more overlap, and formant preservation. Pitch and formant shifts sound cleaner
+  and more natural.
+- Nonlinear stages now run oversampled. The saturator creates harmonics above the
+  audio band, and those harmonics used to alias back into the audible range as
+  content unrelated to your voice. That alias is the harsh, metallic edge that
+  made the sound digital. Oversampling gives the harmonics room, and a filter
+  removes them before they alias.
+- The compressor now has knee, attack, release, makeup, and mix controls. A mix
+  below 1.0 gives you parallel compression. The loud parts come under control and
+  the quiet detail stays untouched.
+- The EQ is now fully parametric. Every band has its own frequency, and the mid
+  band has a Q control. Boxiness sits at a different frequency on every
+  microphone, and a fixed 3 kHz bell could not reach it.
+- The high-pass filter can run at 24 dB/octave instead of 12. Rumble just below
+  the cutoff is now gone, not merely quieter.
+- The de-esser now has a range control. The control limits how far the de-esser
+  can attenuate sibilance, so a hard "sss" cannot make a hole in the sound.
+- The limiter now has lookahead and release controls.
 - Three factory presets: Broadcast, Warm, and Podcast.
-- The Mixer shows how much delay your chain is adding, so you can tell at a
-  glance whether monitoring yourself will feel immediate.
+- The Mixer shows how much delay your chain adds. You can see at once whether
+  monitoring your own voice will feel immediate.
 
 ### Changed
 
-- Autotune is rebuilt on TD-PSOLA instead of the phase vocoder. It now moves
-  grains of your actual waveform rather than rebuilding the sound from moved
-  frequency bins, so corrected singing keeps your vocal character instead of
-  going watery. Formants are preserved inherently, so the formant switch is gone.
-  Unvoiced sounds pass through untouched, which keeps consonants intact.
-- Pitch detection is much steadier: it now reports a confidence, filters out
-  isolated octave errors, and holds a note through brief weak patches. Autotune
-  no longer warbles when the detector was unsure.
-- The Pitch and Warp nodes keep partials phase-locked to their spectral peaks and
-  reset phase on transients. This removes most of the smeared, underwater quality
-  that shifted voices had, and stops consonants going mushy.
-- The compressor measures loudness (RMS) rather than the raw waveform, and has a
-  soft knee and a program-dependent release. Reading the waveform sample by
-  sample made the gain wobble within every cycle of a low voice, which is the
-  grabby, buzzy quality of a cheap compressor.
-- The limiter looks ahead a couple of milliseconds and turns the gain down before
-  a peak arrives, instead of clamping the waveform flat when it gets there. It
-  also detects peaks that fall between samples, so nothing overshoots after
-  conversion. Plosives no longer distort.
-- The de-esser now ducks a band around your sibilance rather than everything
-  above a crossover, so heavy de-essing no longer dulls the air in your voice.
-  When it is not working it is transparent, exactly.
+- Autotune now uses TD-PSOLA instead of the phase vocoder. It moves grains of
+  your actual waveform instead of rebuilding the sound from moved frequency bins.
+  Corrected singing keeps your vocal character and does not sound watery.
+  TD-PSOLA preserves formants inherently, so the formant switch is gone. Unvoiced
+  sounds pass through untouched, which keeps consonants intact.
+- Pitch detection is much steadier. It now reports a confidence value, removes
+  isolated octave errors, and holds a note through brief weak passages. Autotune
+  no longer warbles when the detector is unsure.
+- The Pitch node and the Warp node keep partials phase-locked to their spectral
+  peaks, and they reset phase on transients. This removes most of the smeared,
+  underwater quality of shifted voices. Consonants stay clear.
+- The compressor now measures loudness (RMS) instead of the raw waveform. It also
+  has a soft knee and a program-dependent release. Sample-by-sample waveform
+  reading made the gain wobble within every cycle of a low voice. That wobble is
+  the grabby, buzzy quality of a cheap compressor.
+- The limiter looks ahead about two milliseconds and reduces the gain before a
+  peak arrives. It no longer clamps the waveform flat at the peak. It also detects
+  peaks between samples, so nothing overshoots after conversion. Plosives no
+  longer distort.
+- The de-esser now attenuates a band around your sibilance instead of everything
+  above a crossover frequency. Heavy de-essing no longer dulls the air in your
+  voice. When the de-esser is inactive, it is transparent.
 - Default settings are more restrained. The stock compressor is gentler and the
-  stock saturation is lighter, on the theory that a preset which sounds
-  impressive for one minute is not what you want for an hour.
-- The original phase-vocoder shifter is kept as a separate "Warp" node. Its
-  grainier, more effected character is good for robotic and glitchy voices.
+  stock saturation is lighter. A preset that sounds impressive for one minute is
+  not what you want for an hour.
+- The original phase-vocoder shifter remains as a separate Warp node. Its
+  grainier, more processed character suits robotic and glitchy voices.
 - On first run, Formant now adopts the system default microphone and playback
-  device (and a virtual cable if one is installed), so a fresh install reflects
-  your actual hardware instead of placeholder device names.
-- The noise gate's lookahead control now also appears on its Mixer channel strip,
-  not only in the node inspector.
+  device. It also adopts a virtual audio cable if one is installed. A fresh
+  install shows your actual hardware instead of placeholder device names.
+- The lookahead control of the noise gate now also appears on its Mixer channel
+  strip, not only in the node inspector.
 
 ## [0.3.1]
 
 ### Fixed
 
-- Fixed an instant crash on startup on machines other than the developer's. The
-  default device configuration named specific hardware, and when none of those
-  names matched, audio setup failed and the app exited immediately with no
-  window. Device resolution now falls back to the system default microphone and
-  speakers, so a fresh install starts anywhere; pick your real devices in Setup.
-- A startup that does fail now shows a dialog and writes the reason to the log,
-  instead of closing silently.
+- Fixed an instant crash on startup on machines other than the developer's
+  machine. The default device configuration named specific hardware. When no name
+  matched, audio setup failed and the app exited immediately with no window.
+  Device resolution now uses the system default microphone and speakers instead.
+  A fresh install starts on any machine. Pick your real devices in the Setup tab.
+- If startup fails, Formant now shows a dialog and writes the reason to the log.
+  It no longer closes without a message.
 
 ## [0.3.0]
 
-Pitch and correction. Existing presets, sessions, and config keep working: the
-new fields default cleanly when an older file is loaded.
+Pitch and correction. Existing presets, sessions, and config files continue to
+work. The new fields default cleanly when Formant loads an older file.
 
 ### Added
 
-- Autotune node: real-time pitch correction that detects the sung note and snaps
-  it to the nearest note in a key and scale. Full controls: key, scale
-  (chromatic, major, minor, and both pentatonics), strength, retune speed (fast
-  for the robotic effect, slow for natural), formant preservation, and a tuning
-  reference. It reuses the phase vocoder and a YIN pitch detector.
+- Autotune node: real-time pitch correction. It detects the sung note and moves
+  it to the nearest note in a key and scale. The controls are key, scale
+  (chromatic, major, minor, and both pentatonics), strength, retune speed,
+  formant preservation, and a tuning reference. A fast retune speed gives the
+  robotic effect and a slow speed sounds natural. The node uses the phase vocoder
+  and a YIN pitch detector.
 
 ### Changed
 
-- The Pitch node feels better: a preserve-formants toggle for natural pitch
-  shifts without the chipmunk effect (on by default for new nodes), and a dry/wet
-  mix so you can layer a shifted harmony under your voice.
+- The Pitch node is better to use. A preserve-formants toggle gives natural pitch
+  shifts without the chipmunk effect, and new nodes enable it by default. A
+  dry/wet mix lets you place a shifted harmony under your voice.
 
 ### Fixed
 
-- The noise gate no longer swallows the start of sentences in voice-activity
-  mode. A short lookahead lets the gate open just before a word's onset, the
-  VAD decision now runs through the same hold and hysteresis as the level gate so
-  gaps between words do not clip, and the open threshold is a little lower. The
-  gate's lookahead is adjustable (0 to 40 ms; default 12).
-- Some UI symbols rendered as empty boxes on systems whose default font lacked
-  those glyphs. Formant now falls back to a Windows symbol font so they display.
+- The noise gate no longer removes the start of sentences in voice-activity mode.
+  A short lookahead opens the gate just before the onset of a word. The VAD
+  decision now uses the same hold and hysteresis as the level gate, so gaps
+  between words do not clip. The open threshold is also a little lower. The
+  lookahead of the gate is adjustable from 0 to 40 ms, with a default of 12 ms.
+- Some interface symbols rendered as empty boxes on systems whose default font
+  lacked those glyphs. Formant now uses a Windows symbol font for those symbols.
 
 ## [0.2.0]
 
-A big creative and reliability update. Existing presets, sessions, and config
-files keep working: the new fields default cleanly when an older file is loaded.
+A large update to the creative features and to reliability. Existing presets,
+sessions, and config files continue to work. The new fields default cleanly when
+Formant loads an older file.
 
 ### Added
 
 Creative voice nodes:
 
-- Pitch and formant shifter, built on a streaming phase vocoder. Pitch and
-  formant are controlled separately, in semitones, so you can go higher or lower,
-  change the apparent size of your voice without changing pitch, or both. It adds
-  about one frame of latency, only when the node is in your chain.
-- Reverb (Freeverb-style), a feedback Delay (echo), and a Chorus, each with a
+- Pitch and formant shifter, built on a streaming phase vocoder. You control
+  pitch and formant separately, in semitones. You can raise or lower your pitch,
+  change the apparent size of your voice without a pitch change, or do both. The
+  node adds about one frame of latency, and only when it is in your chain.
+- Reverb (Freeverb type), a feedback Delay (echo), and a Chorus. Each one has a
   dry/wet mix.
 
 Metering:
 
-- A live spectrum analyzer in the Mixer, showing the frequency content of your
+- A live spectrum analyzer in the Mixer. It shows the frequency content of your
   processed voice.
-- A momentary loudness readout in LUFS (ITU-R BS.1770 K-weighting), which turns
-  green near common streaming and voice-chat targets. Both are fed by a
-  non-blocking tap, so the audio thread never waits on the display.
+- A momentary loudness readout in LUFS (ITU-R BS.1770 K-weighting). It turns
+  green near common streaming and voice-chat targets. A non-blocking tap feeds
+  both meters, so the audio thread never waits for the display.
 
 Node editor:
 
-- Per-node Solo toggles, to hear one node's output in isolation while you tune
-  it.
-- Wire removal: hover a connection's midpoint and click the handle to delete it.
-- Undo and redo (Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z, plus buttons). Edits are
-  debounced, so a slider drag is a single undo step.
+- Per-node Solo toggles. Hear the output of one node in isolation while you
+  adjust it.
+- Wire removal. Hover over the midpoint of a connection and click the handle to
+  delete it.
+- Undo and redo (Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z, plus buttons). Formant debounces
+  edits, so a slider drag is a single undo step.
 
-Mic and setup:
+Microphone and setup:
 
-- Gate auto-calibration: it measures your background noise, then your voice, and
-  sets the gate threshold between them.
-- Device selection is now done with dropdowns of the detected audio devices, with
-  an Advanced section that keeps the substring matching for power users.
+- Gate auto-calibration. It measures your background noise, then your voice, and
+  sets the gate threshold between the two levels.
+- Device selection now uses dropdowns of the detected audio devices. An Advanced
+  section keeps the substring matching for power users.
 - Formant detects whether a virtual audio cable (VB-CABLE, Voicemeeter, or VAC)
-  is installed and, if not, prompts you with a one-click link to get one. A
-  subtle top-bar nudge appears when none is present.
-- A first-run welcome that explains the routing, a one-time hint that closing the
-  window keeps Formant in the tray, and an About panel with the version and a
-  Check-for-updates link (which opens the Releases page; Formant never checks on
-  its own).
+  is installed. If none is present, Formant shows a one-click link to install one
+  and a small notice in the top bar.
+- A first-run welcome screen that explains the routing. A one-time hint that a
+  closed window keeps Formant in the tray. An About panel with the version and a
+  Check-for-updates link. The link opens the Releases page. Formant never checks
+  for updates on its own.
 
 Reliability:
 
-- Crash logging. Panics are written with a backtrace to a log in the Formant
-  config folder, and you get a dialog pointing at it instead of a silent exit.
-- Safe saved files. Config, presets, and the session are written through a temp
-  file and keep a backup of the previous contents, so an interrupted write or a
-  format change cannot lose your work.
+- Crash logging. Formant writes panics with a backtrace to a log in the config
+  folder. It also shows a dialog that points to the log, instead of exiting
+  silently.
+- Safe saved files. Formant writes config, presets, and the session through a
+  temp file, and keeps a backup of the previous contents. An interrupted write or
+  a format change cannot lose your work.
 - Audio device-loss recovery. If a device is unplugged, disabled, or the default
-  changes, Formant reconnects automatically. Losing one output (for example your
-  headphones) no longer takes down the cable.
+  device changes, Formant reconnects automatically. The loss of one output, for
+  example your headphones, no longer stops the virtual audio cable.
 
 Project:
 
-- Third-party notices crediting RNNoise, Steinberg VST3, egui, and other
-  dependencies, plus contributor and security guides and issue templates.
+- Third-party notices that credit RNNoise, Steinberg VST3, egui, and other
+  dependencies. Contributor and security guides and issue templates.
 - A rewritten README with screenshots, an origin story, and a routing diagram.
 
 ### Changed
 
-- The README and SPEC now reflect the shipped app rather than the original
-  scaffold, and the LICENSE file holds the full GPL-3.0 text.
+- The README and SPEC now describe the shipped app instead of the original
+  scaffold. The LICENSE file holds the full GPL-3.0 text.
 
 ## [0.1.0]
 
@@ -182,8 +189,8 @@ First public release.
 ### Audio
 
 - Real-time microphone processing over WASAPI in shared, event-driven mode.
-- Dual output: a monitor device plus a virtual cable that other apps read as a
-  microphone.
+- Dual output: a monitor device and a virtual audio cable that other applications
+  read as a microphone.
 - Drift-compensated resampling in the render path, so long sessions stay free of
   underruns.
 
@@ -191,25 +198,25 @@ First public release.
 
 - Built-in nodes: high-pass filter, RNNoise denoise, noise gate, de-esser,
   compressor, 3-band EQ, saturator, limiter, gain, and makeup.
-- A node graph engine that executes a directed acyclic graph in topological
-  order, with per-node bypass and a global bypass.
+- A node graph engine that runs a directed acyclic graph in topological order,
+  with per-node bypass and a global bypass.
 - A Mix node and signal fan-out for parallel routing: parallel compression,
-  blend-in saturation, and dry/wet balance.
-- VST3 hosting: discovery of installed plugins, adding them as nodes, native
-  editor windows, and persisted parameters.
+  blended saturation, and dry/wet balance.
+- VST3 hosting: discovery of installed plugins, addition of plugins as nodes,
+  native editor windows, and persistent parameters.
 
 ### Control and interface
 
-- Mic gating with voice activity (default), push-to-talk, toggle, and
+- Microphone gating with voice activity (default), push-to-talk, toggle, and
   always-open modes, on rebindable global hotkeys.
 - An egui interface with a Mixer, a pan-and-zoom node editor, and a Setup tab.
-- System tray with hide-to-tray, single-instance protection, optional
-  start-with-Windows, and restore of the last session.
+- System tray with hide-to-tray, single-instance protection, an optional start
+  with Windows, and restore of the last session.
 
 ### Presets and packaging
 
 - Save, load, import, and export presets as RON files.
-- Two factory presets shipped on first run: Standard Vocal and Parallel Vibe.
+- Two factory presets on first run: Standard Vocal and Parallel Vibe.
 - A per-user script installer, a portable zip, and an MSI installer.
 
 [0.4.0]: https://github.com/ABowlOfEleven/Formant/releases/tag/v0.4.0
