@@ -25,7 +25,7 @@ depend on that core.
 2. Run `cargo fmt`.
 3. Keep `cargo clippy` clean.
 4. Match the surrounding style. Keep public text and code comments in plain ASCII
-   punctuation, with no em-dashes.
+   punctuation.
 5. Keep each change focused. A small, single-purpose pull request is easier to
    review.
 
