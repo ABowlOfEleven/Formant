@@ -1,9 +1,9 @@
 # Formant
 
-Real-time voice processing for Windows that does not touch your GPU, phone home,
-or leave a service running in the background. It cleans up your microphone,
-shapes your voice, and hands the result to Discord, OBS, or a game as if it were
-a second mic.
+Formant processes your voice in real time on Windows. It uses the CPU only. It
+sends nothing to the network and it runs no background service. Formant cleans
+your microphone signal, shapes your voice, and sends the result to Discord, OBS,
+or a game as a second microphone.
 
 [![CI](https://github.com/ABowlOfEleven/Formant/actions/workflows/ci.yml/badge.svg)](https://github.com/ABowlOfEleven/Formant/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
@@ -12,157 +12,168 @@ a second mic.
 
 ![The Formant node editor, showing the Parallel Vibe preset](docs/nodes.png)
 
-*The node editor with the Parallel Vibe preset loaded: the cleaned voice splits
-into dry, compressed, and saturated paths, then recombines through a Mix node.*
+*The node editor with the Parallel Vibe preset. The clean voice splits into a dry
+path, a compressed path, and a saturated path. A Mix node combines the three
+paths again.*
 
 ## Why it exists
 
-Voicemod is a lot of software for what most people actually use it for: a clean
-vocal chain and noise reduction. That convenience costs VRAM, a constant
-connection to someone else's API, and a steady drip of upsells. Formant is the
-part worth keeping. It runs a small RNNoise model and a handful of well-tuned
-effects on the CPU, with nothing reaching out to the network, and it routes into
-anything through a virtual audio cable.
+Most people use Voicemod for two functions. They want a clean voice chain and
+noise reduction. Voicemod charges VRAM for those two functions. It also keeps a
+connection to a remote API, and it asks you to buy paid features.
 
-It began as a straight replacement for that daily workflow and then grew a node
-editor, so the simple case stays simple and the deep case is there when you want
+Formant keeps only the part that matters. It runs a small RNNoise model and a set
+of tuned effects on the CPU. No part of Formant connects to the network. A
+virtual audio cable carries the output to any other application.
+
+Formant started as a replacement for this daily workflow. It then got a node
+editor. The simple case stays simple. The complex case is available when you want
 it.
 
 ## How it works
 
 ```
-your mic  ->  Formant's chain  ->  your headphones  (so you can hear yourself)
-                              \->  a virtual cable  ->  Discord / OBS / game
+your microphone  ->  the Formant chain  ->  your headphones  (you hear yourself)
+                                       \->  a virtual audio cable  ->  Discord / OBS / game
 ```
 
-One mono input, processed once, sent to two places at the same time: your own
-ears, and a virtual microphone that every other app reads from. Point an app's
-microphone at the cable and you are finished.
+Formant takes one mono input and processes it one time. It sends the result to
+two places at the same time. The first place is your headphones. The second place
+is a virtual microphone that other applications read. Set the microphone of an
+application to that cable and the setup is complete.
 
-## What you get
+## Features
 
 ![The Formant mixer, with meters, presets, and the channel strip](docs/mixer.png)
 
-**The chain.** High-pass, RNNoise denoise, gate, de-esser, compressor, parametric
-3-band EQ, saturator, limiter, and gain. Enough to take a raw mic to a finished
-voice, with bypass on every node and a global bypass for quick before-and-after.
-The Mixer tab lays the chain out as a channel strip with live meters.
+**The chain.** The chain contains a high-pass filter, RNNoise denoise, a gate, a
+de-esser, a compressor, a parametric 3-band EQ, a saturator, a limiter, and gain.
+This is enough to make a finished voice from a raw microphone signal. Every node
+has a bypass switch, and a global bypass gives you a quick comparison. The Mixer
+tab shows the chain as a channel strip with live meters.
 
-The processing aims to hold up next to commercial plugins rather than merely be
-correct. The compressor tracks loudness rather than the waveform, with a soft
-knee and a program-dependent release. The limiter looks ahead so it turns the
-gain down before a peak instead of clipping it flat, and it catches peaks that
-fall between samples. Saturation runs oversampled, so the harmonics it creates
-cannot fold back down as content unrelated to your voice. The de-esser ducks a
-band around your sibilance instead of everything above a crossover, so taming a
-harsh "sss" does not cost you the air in your voice.
+The processing aims for the quality of commercial plugins, not only for correct
+math. The compressor follows loudness instead of the waveform. It uses a soft
+knee and a program-dependent release. The limiter looks ahead, so it reduces the
+gain before a peak instead of clipping the peak flat. The limiter also catches
+peaks between samples. The saturator runs oversampled, so its harmonics cannot
+alias into content unrelated to your voice.
 
-**A real node editor.** Pan, zoom, and wire it however you like. A Mix node sums
-its inputs and any output can fan out, so you can build parallel compression,
-blend-in saturation, and dry/wet balance, not just a single line of effects.
+The de-esser attenuates a band around your sibilance. It does not attenuate
+everything above a crossover frequency. A harsh "sss" comes under control and
+your voice keeps its air.
 
-**Your plugins, hosted.** Formant finds the VST3 plugins already installed on
-your machine, lets you drop them in as nodes, opens their own editor windows, and
-saves their settings inside your presets.
+**The node editor.** Pan, zoom, and connect the nodes as you want. A Mix node
+sums its inputs, and any output can feed more than one node. You can build
+parallel compression, blended saturation, and a dry/wet balance. The chain is not
+limited to a single line of effects.
 
-**Mic control that stays out of the way.** Voice-activity gating by default, plus
-push-to-talk, toggle, and always-open, all on global hotkeys you can rebind or
-clear.
+**VST3 plugin hosting.** Formant finds the VST3 plugins on your machine. Add them
+as nodes and open their own editor windows. Formant saves their settings inside
+your presets.
 
-**It lives in the tray.** Close the window and the audio keeps running. One
-instance only, an optional start-with-Windows toggle, and it reopens on the exact
-chain you left behind.
+**Microphone control.** Voice-activity gating is the default. Push-to-talk,
+toggle, and always-open are also available. All four modes use global hotkeys that
+you can change or clear.
 
-**No glitches.** A drift-compensated resampler on the output path keeps capture
-and playback clocks in step, so long sessions do not slowly drift into crackle.
+**Tray operation.** Close the window and the audio continues. Formant permits one
+instance only. An optional setting starts Formant with Windows. Formant reopens
+with the chain that you left.
+
+**No dropouts.** A drift-compensated resampler on the output path holds the
+capture clock and the playback clock in step. Long sessions do not drift into
+crackle.
 
 ## Requirements
 
 - Windows 10 or 11.
-- A virtual audio device so other apps can read Formant as a microphone. VB-CABLE
-  (free) or Voicemeeter both work.
-- Headphones or speakers, if you want to monitor yourself.
+- A virtual audio cable, so other applications can read Formant as a microphone.
+  VB-CABLE (free) and Voicemeeter both work.
+- Headphones or speakers, if you want to monitor your own voice.
 
 ## Install
 
-Grab the MSI from the
-[Releases](https://github.com/ABowlOfEleven/Formant/releases) page for a normal
-install, or the portable zip if you would rather not run an installer.
+Download the MSI from the
+[Releases](https://github.com/ABowlOfEleven/Formant/releases) page for a standard
+install. Download the portable zip if you do not want to run an installer.
 
-To build from source instead (per-user, no admin needed):
+To build from source, use these scripts. They install per user and need no
+administrator rights.
 
 ```powershell
 pwsh packaging/install.ps1            # build release, install, add a Start Menu shortcut
 pwsh packaging/install.ps1 -Desktop   # also add a Desktop shortcut
-pwsh packaging/uninstall.ps1          # remove (add -Purge to also delete config and presets)
-pwsh packaging/build-portable.ps1     # build a portable zip into dist/
-pwsh packaging/build-msi.ps1          # build the MSI into dist/
+pwsh packaging/uninstall.ps1          # remove Formant (add -Purge to delete config and presets)
+pwsh packaging/build-portable.ps1     # build a portable zip in dist/
+pwsh packaging/build-msi.ps1          # build the MSI in dist/
 ```
 
-The script installer puts Formant in `%LOCALAPPDATA%\Programs\Formant`; the MSI
-installs to `Program Files`. Either way, config and presets live in
+The script installer puts Formant in `%LOCALAPPDATA%\Programs\Formant`. The MSI
+installs Formant in `Program Files`. Both keep config and presets in
 `%APPDATA%\Formant`.
 
 ## First run
 
-1. Open the **Setup** tab. Pick your microphone as the capture device, your
-   headphones as the monitor output, and your virtual cable as the second output.
-2. In Discord, OBS, or your game, set the microphone to that same virtual cable.
-3. Shape your sound in the **Mixer** and **Nodes** tabs, or just load a preset.
+1. Open the **Setup** tab.
+2. Set the capture device to your microphone.
+3. Set the monitor output to your headphones.
+4. Set the second output to your virtual audio cable.
+5. In Discord, OBS, or your game, set the microphone to that same cable.
+6. Shape your sound in the **Mixer** tab and the **Nodes** tab, or load a preset.
 
-Five presets ship with the app to get you going:
+Formant includes five presets:
 
-- **Standard Vocal** is the classic single chain: high-pass, denoise, gate,
-  de-esser, compressor, EQ, makeup.
-- **Broadcast** is tighter and more present, the sound of someone reading the
-  news.
-- **Warm** is fuller and softer, with a little parallel compression for body and
-  gentle saturation instead of clamping.
-- **Podcast** stays even and intelligible over long stretches, with tighter noise
-  control and enough makeup gain to land near streaming loudness targets.
-- **Parallel Vibe** splits the cleaned voice three ways into a dry path, a
-  heavily compressed parallel path, and a saturated path, then blends them back
-  together through a Mix node. It is a good tour of the parallel routing.
+- **Standard Vocal** is the basic single chain. It has a high-pass filter,
+  denoise, a gate, a de-esser, a compressor, an EQ, and makeup gain.
+- **Broadcast** is tighter and more present. It sounds like a news reader.
+- **Warm** is fuller and softer. It adds parallel compression for body and gentle
+  saturation in place of hard control.
+- **Podcast** stays even and clear over long sessions. It has tighter noise
+  control and enough makeup gain for streaming loudness targets.
+- **Parallel Vibe** splits the clean voice into three paths: a dry path, a
+  heavily compressed path, and a saturated path. A Mix node combines the three
+  paths again. This preset shows you how parallel routing works.
 
-All of them are deliberately restrained. A preset that sounds impressive the
-instant you speak usually stops being impressive about a minute in, and heavy
-processing cannot be undone further down the chain.
+All five presets are restrained. A preset that sounds impressive at the first
+word usually becomes tiring after a minute. You also cannot remove heavy
+processing later in the chain.
 
 ## Build and test
 
 ```sh
 cargo test                              # core DSP, engine, and preset tests
-cargo run -p formant -- --seconds 5     # headless: stream mic through the chain and report stats
+cargo run -p formant -- --seconds 5     # headless: stream the microphone through the chain and report stats
 cargo run -p formant                    # the full GUI
 ```
 
-The whole DSP and graph core is testable without a microphone, which is how the
-math stays honest.
+You can test the complete DSP and graph core without a microphone. This keeps the
+math honest.
 
-## How it is organized
+## Project layout
 
 - `crates/core` (`formant-core`): DSP, the graph engine, routing, presets, and
-  session state. Pure and fully unit-tested without an audio device.
+  session state. This crate is pure and its unit tests need no audio device.
 - `crates/audio` (`formant-audio`): the Windows WASAPI backend, device
   enumeration, and global hotkeys.
 - `crates/vst3` (`formant-vst3`): VST3 discovery and hosting.
-- `crates/app` (`formant`): the egui interface, the tray, and the glue between
-  them.
+- `crates/app` (`formant`): the egui interface, the tray icon, and the code that
+  connects them.
 
-See [SPEC.md](SPEC.md) for the design and architecture in more detail.
+For more detail about the design and the architecture, see [SPEC.md](SPEC.md).
 
 ## License
 
 Formant is free software under the GNU General Public License, version 3 or
-later. See [LICENSE](LICENSE) for the full text.
+later. For the full text, see [LICENSE](LICENSE).
 
 Copyright (C) 2026 Ethan Belanger.
 
-It is GPLv3 because it hosts VST3 plugins through Steinberg's interface
-definitions, which are themselves available under GPLv3 (or a separate Steinberg
-commercial license).
+Formant uses GPLv3 because it hosts VST3 plugins through the Steinberg interface
+definitions. Steinberg supplies those definitions under GPLv3 or under a separate
+commercial license.
 
-Formant builds on open-source work by others, including RNNoise for noise
-reduction and egui for the interface. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
-for credits. VST is a trademark of Steinberg Media Technologies GmbH; Formant is
-an independent project and is not affiliated with Steinberg.
+Formant uses open-source work from other people. This includes RNNoise for noise
+reduction and egui for the interface. For credits, see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). VST is a trademark of Steinberg
+Media Technologies GmbH. Formant is an independent project and has no affiliation
+with Steinberg.
