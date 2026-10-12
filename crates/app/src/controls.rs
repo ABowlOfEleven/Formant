@@ -7,6 +7,7 @@
 
 use eframe::egui::{self, Color32, Ui};
 use formant_core::dsp::compressor::{Character, Detector};
+use formant_core::dsp::gate::GateMode;
 use formant_core::dsp::highpass::SLOPES;
 use formant_core::dsp::Scale;
 use formant_core::graph::hpf_slope;
@@ -111,14 +112,25 @@ pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
                 },
             ]
         }
-        P::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms } => vec![
+        P::Gate {
+            threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms,
+            mode, ratio, hysteresis_db, sc_hpf_hz, sc_lpf_hz,
+        } => vec![
+            choice("mode", mode, &GateMode::ALL, GateMode::label, "Gate drops to the range when closed. Expander turns quiet sound down in proportion to how far below the threshold it is, which is smoother on a voice."),
+            Ctl::Toggle { label: "AI voice detect", value: vad_gate, help: "Open on detected speech instead of on level. Ignores loud non-voice noise like keyboard clicks." },
+            Ctl::Section("threshold"),
             knob(threshold_db, "thresh", (-80.0, 0.0), "dB", 0, "How loud you must be for the gate to open. Set it just above your background noise."),
+            knob(hysteresis_db, "hyst", (0.0, 12.0), "dB", 1, "How far the level must drop below the threshold before closing. Stops chattering when you hover near it."),
             knob(range_db, "range", (-90.0, 0.0), "dB", 0, "How far the mic is turned down when closed. More negative is closer to silent."),
-            log_knob(attack_ms, "attack", (0.1, 50.0), "ms", 1, "How fast the gate opens when you start talking."),
+            log_knob(ratio, "ratio", (1.0, 10.0), ":1", 1, "Expander only: how steeply quiet sound is turned down below the threshold."),
+            Ctl::Section("timing"),
+            log_knob(attack_ms, "attack", (0.05, 50.0), "ms", 2, "How fast the gate opens when you start talking."),
             knob(hold_ms, "hold", (0.0, 500.0), "ms", 0, "How long it stays open after you stop, so the gaps between words don't chop."),
             log_knob(release_ms, "release", (5.0, 2000.0), "ms", 0, "How fast it closes once the hold runs out. Longer keeps word endings."),
             knob(lookahead_ms, "look", (0.0, 40.0), "ms", 0, "Opens the gate just before a word starts, so onsets aren't clipped. Adds this much delay."),
-            Ctl::Toggle { label: "AI voice detect", value: vad_gate, help: "Open on detected speech instead of on level. Ignores loud non-voice noise like keyboard clicks." },
+            Ctl::Section("sidechain"),
+            knob(sc_hpf_hz, "SC HPF", (0.0, 4000.0), "Hz", 0, "Ignore everything below this when deciding to open, so rumble can't trigger it. 0 is off."),
+            knob(sc_lpf_hz, "SC LPF", (0.0, 20000.0), "Hz", 0, "Ignore everything above this when deciding to open, so hiss can't trigger it. 0 is off."),
         ],
         P::DeEsser { threshold_db, ratio, split_hz, range_db } => vec![
             log_knob(split_hz, "freq", (2000.0, 12000.0), "Hz", 0, "Center of the sibilance band. Around 5 to 6 kHz for lower voices, 7 to 9 kHz for higher ones."),

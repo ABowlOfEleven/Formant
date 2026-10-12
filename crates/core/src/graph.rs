@@ -20,6 +20,7 @@ use crate::dsp::{
     PitchShifter, Reverb, Saturator, Scale, SmoothedGain,
 };
 use crate::dsp::compressor::{Character, CompressorSettings, Detector};
+use crate::dsp::gate::GateMode;
 use crate::engine::GateOverride;
 use crate::types::Sample;
 use crate::SAMPLE_RATE;
@@ -110,6 +111,13 @@ pub fn hpf_slope(steep: bool, slope_db: u32) -> u32 {
         0 => 12,
         s => s,
     }
+}
+
+fn default_gate_ratio() -> f32 {
+    3.0
+}
+fn default_gate_hysteresis() -> f32 {
+    6.0
 }
 
 fn default_gate_threshold() -> f32 {
@@ -250,6 +258,11 @@ impl NodeKind {
                 release_ms: default_gate_release(),
                 vad_gate: true,
                 lookahead_ms: default_gate_lookahead(),
+                mode: GateMode::Gate,
+                ratio: default_gate_ratio(),
+                hysteresis_db: 4.0,
+                sc_hpf_hz: 80.0,
+                sc_lpf_hz: 0.0,
             },
             NodeKind::DeEsser => NodeParams::DeEsser {
                 threshold_db: -28.0,
@@ -362,6 +375,20 @@ pub enum NodeParams {
         vad_gate: bool,
         #[serde(default = "default_gate_lookahead")]
         lookahead_ms: f32,
+        #[serde(default)]
+        mode: GateMode,
+        /// Expander ratio (used in expander mode).
+        #[serde(default = "default_gate_ratio")]
+        ratio: f32,
+        /// Gap between the open and close thresholds. Older presets had a
+        /// fixed 6 dB.
+        #[serde(default = "default_gate_hysteresis")]
+        hysteresis_db: f32,
+        /// Detector filters; 0 is off.
+        #[serde(default)]
+        sc_hpf_hz: f32,
+        #[serde(default)]
+        sc_lpf_hz: f32,
     },
     DeEsser {
         threshold_db: f32,
@@ -752,6 +779,11 @@ impl Graph {
                 release_ms: 120.0,
                 vad_gate: true,
                 lookahead_ms: default_gate_lookahead(),
+                mode: GateMode::Gate,
+                ratio: default_gate_ratio(),
+                hysteresis_db: 4.0,
+                sc_hpf_hz: 80.0,
+                sc_lpf_hz: 0.0,
             },
             [490.0, 240.0],
         );
@@ -881,11 +913,13 @@ impl NodeProc {
                 NodeProc::HighPass(HighPass::new(SAMPLE_RATE, cutoff_hz, hpf_slope(steep, slope_db)))
             }
             NodeParams::Denoise => NodeProc::Denoise(Box::new(Denoise::new())),
-            NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms } => {
-                NodeProc::Gate {
-                    gate: Gate::new(SAMPLE_RATE, threshold_db, range_db, attack_ms, hold_ms, release_ms, lookahead_ms),
-                    vad_gate,
-                }
+            NodeParams::Gate {
+                threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms,
+                mode, ratio, hysteresis_db, sc_hpf_hz, sc_lpf_hz,
+            } => {
+                let mut gate = Gate::new(SAMPLE_RATE, threshold_db, range_db, attack_ms, hold_ms, release_ms, lookahead_ms);
+                gate.set_extras(mode, ratio, hysteresis_db, sc_hpf_hz, sc_lpf_hz);
+                NodeProc::Gate { gate, vad_gate }
             }
             NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db } => {
                 NodeProc::DeEsser(DeEsser::new(SAMPLE_RATE, split_hz, threshold_db, ratio, range_db))
@@ -965,9 +999,13 @@ impl NodeProc {
             }
             (
                 NodeProc::Gate { gate, vad_gate },
-                NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate: vg, lookahead_ms },
+                NodeParams::Gate {
+                    threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate: vg, lookahead_ms,
+                    mode, ratio, hysteresis_db, sc_hpf_hz, sc_lpf_hz,
+                },
             ) => {
                 gate.configure(*threshold_db, *range_db, *attack_ms, *hold_ms, *release_ms, *lookahead_ms);
+                gate.set_extras(*mode, *ratio, *hysteresis_db, *sc_hpf_hz, *sc_lpf_hz);
                 *vad_gate = *vg;
             }
             (
@@ -1553,7 +1591,13 @@ mod tests {
                     vad_gate: true,
                 )"#;
         match params_from_ron(old) {
-            NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms } => {
+            NodeParams::Gate {
+                threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms,
+                mode, hysteresis_db, sc_hpf_hz, ..
+            } => {
+                assert_eq!(mode, GateMode::Gate, "older gates stay gates");
+                assert_eq!(hysteresis_db, 6.0, "older gates keep the old fixed 6 dB hysteresis");
+                assert_eq!(sc_hpf_hz, 0.0);
                 assert!((threshold_db - 20.0 * 0.02f32.log10()).abs() < 1e-4, "got {threshold_db}");
                 assert!((threshold_db + 33.979).abs() < 1e-2, "got {threshold_db}");
                 assert!(vad_gate);
