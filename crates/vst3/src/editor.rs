@@ -220,7 +220,7 @@ fn create_window(title: &str, width: i32, height: i32) -> Result<HWND> {
             rect.bottom - rect.top,
             None,
             None,
-            HINSTANCE(hinstance.0),
+            Some(HINSTANCE(hinstance.0)),
             None,
         )?;
         Ok(hwnd)

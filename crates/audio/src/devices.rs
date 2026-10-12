@@ -5,13 +5,14 @@
 //! the mic, the monitor, and the virtual-cable sink by name.
 
 use anyhow::{Context, Result};
-use windows::core::{HSTRING, PCWSTR, PWSTR};
+use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::Media::Audio::{
     eCapture, eConsole, eRender, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
     DEVICE_STATE, DEVICE_STATE_ACTIVE, DEVICE_STATEMASK_ALL,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL, STGM_READ};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
 
 /// Capture (input) or render (output) endpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,15 +139,16 @@ pub fn device_id(device: &IMMDevice) -> Result<String> {
 pub fn friendly_name(device: &IMMDevice) -> Result<String> {
     // SAFETY: open the property store read-only and read the friendly-name
     // PROPVARIANT. Friendly name is stored as VT_LPWSTR, so the union holds a
-    // PWSTR we copy out before `prop` drops (its Drop calls PropVariantClear,
-    // freeing the buffer for us).
+    // PWSTR. We copy it out, then free the variant ourselves: since windows
+    // 0.62, PROPVARIANT is a plain struct with no Drop, so skipping
+    // PropVariantClear would leak the string on every device enumeration.
     unsafe {
         let store = device.OpenPropertyStore(STGM_READ)?;
-        let prop = store.GetValue(&PKEY_Device_FriendlyName)?;
-        let raw = prop.as_raw().Anonymous.Anonymous.Anonymous.pwszVal;
-        PWSTR(raw)
-            .to_string()
-            .context("friendly name was not valid UTF-16")
+        let mut prop = store.GetValue(&PKEY_Device_FriendlyName)?;
+        let raw = prop.Anonymous.Anonymous.Anonymous.pwszVal;
+        let name = raw.to_string().context("friendly name was not valid UTF-16");
+        let _ = PropVariantClear(&mut prop);
+        name
     }
 }
 

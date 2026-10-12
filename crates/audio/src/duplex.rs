@@ -22,7 +22,7 @@ use anyhow::Result;
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Media::Audio::{
     IAudioCaptureClient, IAudioClient, IAudioRenderClient, IMMDevice, AUDCLNT_SHAREMODE_SHARED,
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -83,7 +83,7 @@ unsafe fn open_shared(device: &IMMDevice) -> Result<Stream> {
     )?;
     CoTaskMemFree(Some(mix as *const _));
 
-    let event = CreateEventW(None, BOOL(0), BOOL(0), PCWSTR::null())?;
+    let event = CreateEventW(None, false, false, PCWSTR::null())?;
     client.SetEventHandle(event)?;
     let buffer_frames = client.GetBufferSize()?;
 
