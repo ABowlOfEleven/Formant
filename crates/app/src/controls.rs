@@ -246,11 +246,24 @@ pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
             knob(wow, "wow", (0.0, 1.0), "", 2, "Slow pitch drift, like a worn tape transport."),
             knob(flutter, "flutter", (0.0, 1.0), "", 2, "Fast, fine pitch wobble."),
         ],
-        P::Chorus { depth_ms, rate_hz, mix } => vec![
-            knob(depth_ms, "depth", (0.0, 15.0), "ms", 1, "How far the copies wobble. More is lusher."),
-            log_knob(rate_hz, "rate", (0.05, 8.0), "Hz", 2, "Speed of the wobble."),
-            knob(mix, "mix", (0.0, 1.0), "", 2, "Blend of dry and chorused sound."),
-        ],
+        P::Chorus { depth_ms, rate_hz, mix, base_ms, voices, feedback, highcut_hz } => {
+            let selected = (*voices).clamp(1, 3) as usize - 1;
+            vec![
+                Ctl::Choice {
+                    label: "voices",
+                    options: vec!["1", "2", "3"],
+                    selected,
+                    set: Box::new(move |i| *voices = i as u32 + 1),
+                    help: "How many wobbling copies are layered. More is thicker and smoother.",
+                },
+                knob(depth_ms, "depth", (0.0, 15.0), "ms", 1, "How far the copies wobble. More is lusher, then seasick."),
+                log_knob(rate_hz, "rate", (0.05, 8.0), "Hz", 2, "Speed of the wobble."),
+                knob(base_ms, "delay", (1.0, 30.0), "ms", 1, "Center delay of the copies. Short is a flanger-like sweep; longer is a doubled voice."),
+                bi_knob(feedback, "feedback", (-0.7, 0.7), "", 2, "Feed the copies back in. Toward either end it becomes a flanger."),
+                log_knob(highcut_hz, "high cut", (2000.0, 20000.0), "Hz", 0, "Darken the copies, like a classic analog chorus. Fully up is open."),
+                knob(mix, "mix", (0.0, 1.0), "", 2, "Blend of dry and chorused sound."),
+            ]
+        }
         P::Limiter { ceiling_db, lookahead_ms, release_ms, drive_db, auto_release, true_peak } => vec![
             knob(drive_db, "drive", (0.0, 24.0), "dB", 1, "Push the level into the limiter. The output gets louder while the ceiling still holds."),
             knob(ceiling_db, "ceiling", (-24.0, 0.0), "dB", 1, "Nothing leaves louder than this."),

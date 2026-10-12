@@ -24,6 +24,7 @@ use crate::dsp::deesser::{DeEsserSettings, DeessDetection, DeessMode};
 use crate::dsp::eq::EqSettings;
 use crate::dsp::gate::GateMode;
 use crate::dsp::limiter::LimiterSettings;
+use crate::dsp::chorus::ChorusSettings;
 use crate::dsp::delay::DelaySettings;
 use crate::dsp::saturator::{SatKind, SaturatorSettings};
 use crate::engine::GateOverride;
@@ -116,6 +117,13 @@ fn eq_settings(p: &NodeParams) -> EqSettings {
         },
         _ => EqSettings::default(),
     }
+}
+
+fn default_chorus_base() -> f32 {
+    18.0
+}
+fn default_one() -> u32 {
+    1
 }
 
 fn default_tone_off() -> f32 {
@@ -400,7 +408,15 @@ impl NodeKind {
                 wow: 0.1,
                 flutter: 0.05,
             },
-            NodeKind::Chorus => NodeParams::Chorus { depth_ms: 6.0, rate_hz: 1.2, mix: 0.4 },
+            NodeKind::Chorus => NodeParams::Chorus {
+                depth_ms: 2.0,
+                rate_hz: 0.6,
+                mix: 0.35,
+                base_ms: 12.0,
+                voices: 2,
+                feedback: 0.0,
+                highcut_hz: 10_000.0,
+            },
             NodeKind::Limiter => NodeParams::Limiter {
                 ceiling_db: -1.0,
                 lookahead_ms: default_limiter_lookahead(),
@@ -611,7 +627,20 @@ pub enum NodeParams {
         #[serde(default)]
         flutter: f32,
     },
-    Chorus { depth_ms: f32, rate_hz: f32, mix: f32 },
+    Chorus {
+        depth_ms: f32,
+        rate_hz: f32,
+        mix: f32,
+        /// Older presets: one voice at an 18 ms center, no feedback, open top.
+        #[serde(default = "default_chorus_base")]
+        base_ms: f32,
+        #[serde(default = "default_one")]
+        voices: u32,
+        #[serde(default)]
+        feedback: f32,
+        #[serde(default = "default_tone_off")]
+        highcut_hz: f32,
+    },
     Limiter {
         ceiling_db: f32,
         /// How far ahead the limiter looks. This is what lets it turn the gain
@@ -1116,9 +1145,9 @@ impl NodeProc {
                     DelaySettings { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter },
                 ))
             }
-            NodeParams::Chorus { depth_ms, rate_hz, mix } => {
-                NodeProc::Chorus(Chorus::new(SAMPLE_RATE, depth_ms, rate_hz, mix))
-            }
+            NodeParams::Chorus { depth_ms, rate_hz, mix, base_ms, voices, feedback, highcut_hz } => NodeProc::Chorus(
+                Chorus::new(SAMPLE_RATE, ChorusSettings { depth_ms, rate_hz, mix, base_ms, voices, feedback, highcut_hz }),
+            ),
             NodeParams::Limiter { .. } => {
                 NodeProc::Limiter(Limiter::new(SAMPLE_RATE, limiter_settings(params)))
             }
@@ -1207,8 +1236,8 @@ impl NodeProc {
             (NodeProc::Delay(d), &NodeParams::Delay { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter }) => {
                 d.configure(DelaySettings { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter });
             }
-            (NodeProc::Chorus(c), NodeParams::Chorus { depth_ms, rate_hz, mix }) => {
-                c.configure(*depth_ms, *rate_hz, *mix);
+            (NodeProc::Chorus(c), &NodeParams::Chorus { depth_ms, rate_hz, mix, base_ms, voices, feedback, highcut_hz }) => {
+                c.configure(ChorusSettings { depth_ms, rate_hz, mix, base_ms, voices, feedback, highcut_hz });
             }
             (NodeProc::Limiter(l), p @ NodeParams::Limiter { .. }) => {
                 l.configure(limiter_settings(p));
