@@ -22,7 +22,11 @@ const METAL_TOP: Color32 = Color32::from_rgb(47, 52, 59);
 const METAL_BOTTOM: Color32 = Color32::from_rgb(29, 33, 38);
 /// Silkscreen print on the faceplate.
 const SILK: Color32 = Color32::from_rgb(196, 207, 213);
-const SILK_DIM: Color32 = Color32::from_rgb(128, 141, 149);
+/// Dimmer print for labels. Kept at 4.5:1 or better against every metal and
+/// button surface it sits on (WCAG AA for small text).
+const SILK_DIM: Color32 = Color32::from_rgb(160, 173, 180);
+/// Keyboard focus ring.
+const FOCUS: Color32 = Color32::from_rgb(120, 230, 255);
 /// Glass of a screen or meter window.
 const GLASS: Color32 = Color32::from_rgb(7, 10, 12);
 /// Readout color on screens: warm, like an amber display.
@@ -209,8 +213,10 @@ fn faceplate_impl<R>(
 
 /// A recessed glass window cut into the faceplate. `paint` draws the contents
 /// inside the returned rect; the bezel and glass reflection go around and over.
-pub fn screen(ui: &mut Ui, size: Vec2, paint: impl FnOnce(&egui::Painter, Rect)) -> Response {
+/// `description` is what a screen reader announces for the display.
+pub fn screen(ui: &mut Ui, size: Vec2, description: &str, paint: impl FnOnce(&egui::Painter, Rect)) -> Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, description));
     let painter = ui.painter_at(rect.expand(3.0));
     let r = CornerRadius::same(5);
     // Bezel: the cut is shadowed at the top and catches light at the bottom.
@@ -276,7 +282,9 @@ const KNOB_START: f32 = std::f32::consts::PI * 0.75;
 const KNOB_SWEEP: f32 = std::f32::consts::PI * 1.5;
 
 /// A machined knob with an LED arc. Drag up/down to turn (Shift for fine),
-/// scroll to nudge, double-click to reset. The value prints on a small
+/// double-click to reset. Once focused (click or Tab): arrow keys nudge,
+/// Page Up/Down jump, Home/End go to the ends, Delete resets, and the mouse
+/// wheel nudges. The value prints on a small
 /// readout under the knob.
 pub fn knob(ui: &mut Ui, value: &mut f32, spec: &KnobSpec, accent: Color32, diameter: f32) -> Response {
     let width = diameter.max(64.0);
@@ -291,14 +299,72 @@ pub fn knob(ui: &mut Ui, value: &mut f32, spec: &KnobSpec, accent: Color32, diam
         let fine = ui.input(|i| i.modifiers.shift);
         t -= resp.drag_delta().y / if fine { 900.0 } else { 180.0 };
     }
-    if resp.hovered() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+    // The wheel turns a knob only once it has focus (clicked or tabbed to),
+    // and the knob then consumes the scroll. Otherwise scrolling a panel full
+    // of knobs would turn every knob the pointer passed over.
+    if resp.hovered() && resp.has_focus() {
+        let scroll = ui.input_mut(|i| std::mem::take(&mut i.smooth_scroll_delta.y));
         if scroll != 0.0 {
             t += scroll / 1500.0;
         }
     }
+    if resp.clicked() || resp.drag_started() {
+        resp.request_focus();
+    }
     if resp.double_clicked() {
         t = spec.norm_of(spec.default);
+    }
+    // Keyboard: arrows nudge (Shift for fine), Page Up/Down jump, Home/End go
+    // to the ends, Delete or Backspace resets. Arrow keys are claimed while
+    // focused so they turn the knob instead of moving focus away.
+    if resp.has_focus() {
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                resp.id,
+                egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() },
+            )
+        });
+        let (up, down, pg_up, pg_down, home, end, reset, fine) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                    | i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
+                    | i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowUp)
+                    | i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowRight),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                    | i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
+                    | i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowDown)
+                    | i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowLeft),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::PageUp),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::PageDown),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Home),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::End),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                    | i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
+                i.modifiers.shift,
+            )
+        });
+        let step = if fine { 0.002 } else { 0.01 };
+        if up {
+            t += step;
+        }
+        if down {
+            t -= step;
+        }
+        if pg_up {
+            t += 0.1;
+        }
+        if pg_down {
+            t -= 0.1;
+        }
+        if home {
+            t = 0.0;
+        }
+        if end {
+            t = 1.0;
+        }
+        if reset {
+            t = spec.norm_of(spec.default);
+        }
     }
     if t != before {
         *value = spec.value_at(t);
@@ -306,7 +372,10 @@ pub fn knob(ui: &mut Ui, value: &mut f32, spec: &KnobSpec, accent: Color32, diam
         resp.mark_changed();
     }
     let resp = resp.on_hover_cursor(CursorIcon::ResizeVertical);
-    let active = resp.dragged() || resp.hovered();
+    let label = spec.label;
+    let readout_text = spec.format(*value);
+    resp.widget_info(|| egui::WidgetInfo::slider(true, *value as f64, format!("{label}: {readout_text}")));
+    let active = resp.dragged() || resp.hovered() || resp.has_focus();
 
     let painter = ui.painter();
     let r_arc = diameter / 2.0 - 1.0;
@@ -336,6 +405,10 @@ pub fn knob(ui: &mut Ui, value: &mut f32, spec: &KnobSpec, accent: Color32, diam
         painter.line_segment([c + d * r0, c + d * r1], Stroke::new(1.0, SILK_DIM.gamma_multiply(0.8)));
     }
 
+    if resp.has_focus() {
+        painter.circle_stroke(c, r_arc + 5.0, Stroke::new(2.0, FOCUS));
+    }
+
     // Body: shadow, knurled skirt, then a domed cap lit from above.
     round_shadow(painter, c, r_body, 3.5);
     painter.add(gradient_disc(c, r_body, Color32::from_rgb(70, 76, 84), Color32::from_rgb(24, 27, 31)));
@@ -362,7 +435,7 @@ pub fn knob(ui: &mut Ui, value: &mut f32, spec: &KnobSpec, accent: Color32, diam
 
     // Label and value readout.
     let label_y = c.y + diameter / 2.0 + 6.0;
-    silk_text(painter, Pos2::new(c.x, label_y), Align2::CENTER_TOP, &spec.label.to_uppercase(), 10.5, SILK_DIM);
+    silk_text(painter, Pos2::new(c.x, label_y), Align2::CENTER_TOP, &spec.label.to_uppercase(), 11.5, SILK_DIM);
     let readout = Rect::from_center_size(Pos2::new(c.x, label_y + 22.0), Vec2::new(width - 6.0, 15.0));
     painter.rect_filled(readout.expand(1.0), CornerRadius::same(3), black(170));
     painter.rect_filled(readout, CornerRadius::same(3), GLASS);
@@ -378,10 +451,58 @@ pub fn knob(ui: &mut Ui, value: &mut f32, spec: &KnobSpec, accent: Color32, diam
 
 // ------------------------------------------------------------------ button
 
+/// What an LED button means, for screen readers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LedRole {
+    /// Does something when pressed (load a preset, start calibration).
+    Action,
+    /// Switches a setting on and off.
+    Toggle,
+    /// One of a group of mutually exclusive options.
+    Option,
+}
+
 /// A raised push button with an LED. `on` lights the LED and shows the button
 /// latched in. Returns the click response.
 pub fn led_button(ui: &mut Ui, label: &str, on: bool, accent: Color32, width: f32) -> Response {
+    led_button_as(ui, label, on, accent, width, LedRole::Action)
+}
+
+/// A toggle switch drawn as an LED button.
+pub fn led_toggle(ui: &mut Ui, label: &str, on: bool, accent: Color32, width: f32) -> Response {
+    led_button_as(ui, label, on, accent, width, LedRole::Toggle)
+}
+
+/// One option of a group, drawn as an LED button.
+pub fn led_option(ui: &mut Ui, label: &str, on: bool, accent: Color32, width: f32) -> Response {
+    led_button_as(ui, label, on, accent, width, LedRole::Option)
+}
+
+/// A toggle whose printed label is short ("ON") but whose spoken name says
+/// what it switches ("High-pass on").
+pub fn led_toggle_named(ui: &mut Ui, label: &str, name: &str, on: bool, accent: Color32, width: f32) -> Response {
+    led_button_full(ui, label, name, on, accent, width, LedRole::Toggle)
+}
+
+pub fn led_button_as(ui: &mut Ui, label: &str, on: bool, accent: Color32, width: f32, role: LedRole) -> Response {
+    led_button_full(ui, label, label, on, accent, width, role)
+}
+
+fn led_button_full(
+    ui: &mut Ui,
+    label: &str,
+    name: &str,
+    on: bool,
+    accent: Color32,
+    width: f32,
+    role: LedRole,
+) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
+    resp.widget_info(|| match role {
+        LedRole::Action => egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name),
+        LedRole::Toggle => egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, name),
+        LedRole::Option => egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, name),
+    });
     let painter = ui.painter();
     let pressed = resp.is_pointer_button_down_on() || on;
     let r = CornerRadius::same(4);
@@ -405,6 +526,9 @@ pub fn led_button(ui: &mut Ui, label: &str, on: bool, accent: Color32, width: f3
     led(painter, Pos2::new(cap.left() + 12.0, cap.center().y), 3.2, accent, on);
     let text_col = if on { theme::lerp(SILK, accent, 0.35) } else { SILK };
     silk_text(painter, Pos2::new(cap.left() + 23.0, cap.center().y), Align2::LEFT_CENTER, label, 12.0, text_col);
+    if resp.has_focus() {
+        painter.rect_stroke(rect.expand(3.0), CornerRadius::same(6), Stroke::new(2.0, FOCUS), egui::StrokeKind::Outside);
+    }
     resp
 }
 
@@ -424,10 +548,17 @@ pub fn led_ladder(ui: &mut Ui, id: Id, label: &str, frac: f32, size: Vec2, help:
     }
     ui.data_mut(|d| d.insert_temp(id, (peak, at)));
 
-    let total = Vec2::new(size.x.max(26.0), size.y + 18.0);
+    let total = Vec2::new(size.x.max(30.0), size.y + 20.0);
     let (outer, resp) = ui.allocate_exact_size(total, Sense::hover());
     let rect = Rect::from_min_size(Pos2::new(outer.center().x - size.x / 2.0, outer.top()), size);
     let resp = resp.on_hover_text(help);
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::ProgressIndicator,
+            true,
+            format!("{label} meter: {:.0} percent", frac * 100.0),
+        )
+    });
     let painter = ui.painter();
     painter.rect_filled(rect.expand(2.0), CornerRadius::same(4), black(170));
     painter.rect_filled(rect, CornerRadius::same(3), GLASS);
@@ -456,7 +587,7 @@ pub fn led_ladder(ui: &mut Ui, id: Id, label: &str, frac: f32, size: Vec2, help:
     }
     let gloss = Rect::from_min_max(rect.min + Vec2::new(1.0, 1.0), Pos2::new(rect.center().x, rect.bottom() - 1.0));
     painter.rect_filled(gloss, CornerRadius::same(2), white(6));
-    silk_text(painter, Pos2::new(outer.center().x, rect.bottom() + 6.0), Align2::CENTER_TOP, label, 10.0, SILK_DIM);
+    silk_text(painter, Pos2::new(outer.center().x, rect.bottom() + 6.0), Align2::CENTER_TOP, label, 11.0, SILK_DIM);
     resp
 }
 
@@ -525,6 +656,7 @@ pub fn rack_backdrop(painter: &egui::Painter, rect: Rect) {
 /// A small amber display showing `text`, recessed like the knob readouts.
 pub fn readout(ui: &mut Ui, text: &str, width: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 20.0), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     let painter = ui.painter();
     painter.rect_filled(rect.expand(1.5), CornerRadius::same(4), black(180));
     painter.rect_filled(rect, CornerRadius::same(3), GLASS);
@@ -536,8 +668,11 @@ pub fn readout(ui: &mut Ui, text: &str, width: f32) -> Response {
 
 /// Text in the silkscreen style, laid out as a normal widget.
 pub fn silk_label(ui: &mut Ui, text: &str, size: f32) -> Response {
+    // Never smaller than 11.5 px: this is the faceplate's smallest print.
+    let size = size.max(11.5);
     let galley_w = text.len() as f32 * size * 0.62;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley_w, size + 4.0), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     silk_text(ui.painter(), rect.left_center(), Align2::LEFT_CENTER, text, size, SILK_DIM);
     resp
 }

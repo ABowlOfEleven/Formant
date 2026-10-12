@@ -357,7 +357,7 @@ pub fn draw(ui: &mut Ui, params: &mut NodeParams, accent: Color32) -> Option<boo
                     }
                     Ctl::Toggle { label, value, help } => {
                         let w = ui.available_width().min(220.0);
-                        if hw::led_button(ui, label, *value, accent, w).on_hover_text(help).clicked() {
+                        if hw::led_toggle(ui, label, *value, accent, w).on_hover_text(help).clicked() {
                             *value = !*value;
                             changed = true;
                         }
@@ -382,7 +382,7 @@ pub fn draw(ui: &mut Ui, params: &mut NodeParams, accent: Color32) -> Option<boo
                             ui.horizontal_wrapped(|ui| {
                                 for (i, o) in options.iter().enumerate() {
                                     let w = (o.len() as f32 * 7.5 + 34.0).max(54.0);
-                                    if hw::led_button(ui, o, i == selected, accent, w).on_hover_text(help).clicked()
+                                    if hw::led_option(ui, o, i == selected, accent, w).on_hover_text(help).clicked()
                                         && i != selected
                                     {
                                         set(i);

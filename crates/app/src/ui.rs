@@ -698,9 +698,9 @@ impl FormantApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let bypassed = self.engine.controls.global_bypass();
                     let (txt, col) = if bypassed {
-                        ("● BYPASSED", theme::EMBER)
+                        ("BYPASSED", theme::EMBER)
                     } else {
-                        ("● live", theme::GOOD)
+                        ("LIVE", theme::GOOD)
                     };
                     if ui.button(RichText::new(txt).color(col).strong()).on_hover_text("Turn ALL processing off - passes your raw mic straight through.").clicked() {
                         self.engine.controls.toggle_bypass();
@@ -742,7 +742,11 @@ impl FormantApp {
                     let screen_w = (ui.available_width() - side - 16.0).max(260.0);
                     let delay_ms = self.graph.latency_samples() as f32 / formant_core::SAMPLE_RATE as f32 * 1000.0;
                     let bands = self.spectrum.bands;
-                    hw::screen(ui, Vec2::new(screen_w, 168.0), |p, rect| {
+                    let description = format!(
+                        "Output display. Loudness {}. Added delay {delay_ms:.0} milliseconds.",
+                        if lufs <= -69.0 { "quiet".to_string() } else { format!("{lufs:.1} LUFS") }
+                    );
+                    hw::screen(ui, Vec2::new(screen_w, 168.0), &description, |p, rect| {
                         paint_spectrum(p, rect.shrink2(Vec2::new(8.0, 6.0)), &bands);
                         let loud = if lufs <= -69.0 { "  quiet".to_string() } else { format!("{lufs:>5.1} LUFS") };
                         let near = lufs > -20.0 && lufs < -12.0;
@@ -774,7 +778,7 @@ impl FormantApp {
                         ui.set_width(side);
                         let bypassed = self.engine.controls.global_bypass();
                         let (label, col) = if bypassed { ("BYPASSED", theme::EMBER) } else { ("PROCESSING", theme::GOOD) };
-                        if hw::led_button(ui, label, true, col, side)
+                        if hw::led_toggle(ui, label, !bypassed, col, side)
                             .on_hover_text("Turn ALL processing off - passes your raw mic straight through.")
                             .clicked()
                         {
@@ -787,7 +791,7 @@ impl FormantApp {
                         for row in [[MuteMode::Vad, MuteMode::PushToTalk], [MuteMode::Toggle, MuteMode::AlwaysOpen]] {
                             ui.horizontal(|ui| {
                                 for m in row {
-                                    if hw::led_button(ui, m.label(), cur == m, theme::CYAN, half).on_hover_text(mode_help(m)).clicked() {
+                                    if hw::led_option(ui, m.label(), cur == m, theme::CYAN, half).on_hover_text(mode_help(m)).clicked() {
                                         self.engine.controls.set_mode(m);
                                     }
                                 }
@@ -891,12 +895,12 @@ impl FormantApp {
                         self.tab = Tab::Nodes;
                     }
                     ui.add_space(4.0);
-                    if hw::led_button(ui, "ON", !node.bypass, theme::GOOD, 104.0).on_hover_text("Switch this node in or out of the chain.").clicked() {
+                    if hw::led_toggle_named(ui, "ON", &format!("{} on", node_label(&node.params)), !node.bypass, theme::GOOD, 104.0).on_hover_text("Switch this node in or out of the chain.").clicked() {
                         if let Some(n) = self.graph.node_mut(id) {
                             n.bypass = !n.bypass;
                         }
                     }
-                    if hw::led_button(ui, "SOLO", node.solo, theme::EMBER, 104.0)
+                    if hw::led_toggle_named(ui, "SOLO", &format!("{} solo", node_label(&node.params)), node.solo, theme::EMBER, 104.0)
                         .on_hover_text("Hear only this node's output, to audition it in isolation.")
                         .clicked()
                     {
@@ -1528,6 +1532,15 @@ impl FormantApp {
 /// A pill-style tab button with a clear active state + accent underline.
 fn tab_button(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(94.0, 30.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, format!("{label} tab")));
+    if resp.has_focus() {
+        ui.painter().rect_stroke(
+            rect.expand(2.0),
+            CornerRadius::same(8),
+            Stroke::new(2.0, Color32::from_rgb(120, 230, 255)),
+            egui::StrokeKind::Outside,
+        );
+    }
     let painter = ui.painter();
     let r = CornerRadius::same(7);
     if active {

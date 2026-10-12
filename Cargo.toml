@@ -17,7 +17,7 @@ ron = "0.12"
 rtrb = "0.4"
 nnnoiseless = { version = "0.5", default-features = false }
 ctrlc = "3"
-eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
 
 formant-core = { path = "crates/core" }
 formant-audio = { path = "crates/audio" }

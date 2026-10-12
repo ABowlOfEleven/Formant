@@ -75,6 +75,17 @@ autotune correction is now more accurate.
   bench (`cargo run --release -p formant-core --example effects_lab`)
   measures this for each effect.
 - The Nodes inspector shows each effect's controls as knobs and LED buttons.
+- Accessibility:
+  - Screen reader support (AccessKit) is turned on. Every knob, button,
+    meter and display now has a role, a name and a value. For example, a
+    channel's switch is read as "High-pass on" and a knob as "cutoff: 60 Hz".
+  - Knobs work from the keyboard. Click or Tab to a knob, then use the arrow
+    keys to nudge it (hold Shift for fine steps), Page Up or Page Down to
+    jump, Home or End for the limits, and Delete to reset. Focused controls
+    show a ring.
+  - The mouse wheel turns a knob only after you click it. Scrolling a panel
+    no longer changes every knob the pointer passes over.
+  - The dim panel labels meet WCAG AA contrast and are at least 11.5 px.
 - Updated dependencies: eframe/egui 0.36, windows 0.62, ron 0.12, tray-icon
   0.26, rfd 0.17, json5 1, rtrb 0.4 and winreg 0.56. Saved presets, sessions
   and settings are unchanged on disk.
