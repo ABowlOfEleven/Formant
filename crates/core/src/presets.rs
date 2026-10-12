@@ -263,7 +263,14 @@ fn warm() -> Graph {
     chain.extend([
         deess(-26.0, 3.5, 7000.0, 6.0),
         comp(-24.0, 2.5, 10.0, 15.0, 150.0, 3.0, 0.8),
-        NodeParams::Saturator { drive: 2.2, mix: 0.3 },
+        NodeParams::Saturator {
+            drive: 2.2,
+            mix: 0.3,
+            kind: crate::dsp::saturator::SatKind::Soft,
+            bias: 0.0,
+            tone_hz: 20_000.0,
+            output_db: 0.0,
+        },
         eq(2.5, 140.0, -1.5, 800.0, 1.2, -1.0, 9_000.0),
         limiter(-1.0),
     ]);

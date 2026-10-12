@@ -24,6 +24,7 @@ use crate::dsp::deesser::{DeEsserSettings, DeessDetection, DeessMode};
 use crate::dsp::eq::EqSettings;
 use crate::dsp::gate::GateMode;
 use crate::dsp::limiter::LimiterSettings;
+use crate::dsp::saturator::{SatKind, SaturatorSettings};
 use crate::engine::GateOverride;
 use crate::types::Sample;
 use crate::SAMPLE_RATE;
@@ -114,6 +115,10 @@ fn eq_settings(p: &NodeParams) -> EqSettings {
         },
         _ => EqSettings::default(),
     }
+}
+
+fn default_tone_off() -> f32 {
+    20_000.0
 }
 
 fn default_low_mid_hz() -> f32 {
@@ -355,7 +360,14 @@ impl NodeKind {
                 proportional_q: false,
                 output_db: 0.0,
             },
-            NodeKind::Saturator => NodeParams::Saturator { drive: 2.0, mix: 0.25 },
+            NodeKind::Saturator => NodeParams::Saturator {
+                drive: 2.0,
+                mix: 0.25,
+                kind: SatKind::Tube,
+                bias: 0.2,
+                tone_hz: 16_000.0,
+                output_db: 0.0,
+            },
             NodeKind::PitchShift => NodeParams::PitchShift {
                 pitch_semitones: 0.0,
                 formant_semitones: 0.0,
@@ -527,7 +539,19 @@ pub enum NodeParams {
         #[serde(default)]
         output_db: f32,
     },
-    Saturator { drive: f32, mix: f32 },
+    Saturator {
+        drive: f32,
+        mix: f32,
+        /// Older presets were the plain symmetric tanh with no tone filter.
+        #[serde(default)]
+        kind: SatKind,
+        #[serde(default)]
+        bias: f32,
+        #[serde(default = "default_tone_off")]
+        tone_hz: f32,
+        #[serde(default)]
+        output_db: f32,
+    },
     Pitch {
         pitch_semitones: f32,
         formant_semitones: f32,
@@ -905,7 +929,10 @@ impl Graph {
             [690.0, 240.0],
         );
         let comp_lvl = g.add_node(P::Gain { gain_db: -7.0 }, [860.0, 240.0]);
-        let sat = g.add_node(P::Saturator { drive: 3.0, mix: 1.0 }, [690.0, 380.0]);
+        let sat = g.add_node(
+            P::Saturator { drive: 3.0, mix: 1.0, kind: SatKind::Tube, bias: 0.3, tone_hz: 14_000.0, output_db: 0.0 },
+            [690.0, 380.0],
+        );
         let sat_lvl = g.add_node(P::Gain { gain_db: -14.0 }, [860.0, 380.0]);
         // Blend the branches, then finish.
         let mix = g.add_node(P::Mix { gain_db: 0.0 }, [1040.0, 240.0]);
@@ -1034,7 +1061,9 @@ impl NodeProc {
                 NodeProc::Compressor(Compressor::new(SAMPLE_RATE, comp_settings(params)))
             }
             NodeParams::Eq { .. } => NodeProc::Eq(Eq::new(SAMPLE_RATE, eq_settings(params))),
-            NodeParams::Saturator { drive, mix } => NodeProc::Saturator(Saturator::new(drive, mix)),
+            NodeParams::Saturator { drive, mix, kind, bias, tone_hz, output_db } => NodeProc::Saturator(
+                Saturator::new(SAMPLE_RATE, SaturatorSettings { drive, mix, kind, bias, tone_hz, output_db }),
+            ),
             NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants } => {
                 // Legacy "Warp": small frame, low overlap (its lo-fi character).
                 NodeProc::Pitch(Box::new(PitchShifter::new(
@@ -1121,9 +1150,17 @@ impl NodeProc {
             (NodeProc::Eq(eq), p @ NodeParams::Eq { .. }) => {
                 eq.configure(eq_settings(p));
             }
-            (NodeProc::Saturator(s), NodeParams::Saturator { drive, mix }) => {
-                s.configure(*drive, *mix);
+            (NodeProc::Saturator(s), NodeParams::Saturator { drive, mix, kind, bias, tone_hz, output_db }) => {
+                s.configure(SaturatorSettings {
+                    drive: *drive,
+                    mix: *mix,
+                    kind: *kind,
+                    bias: *bias,
+                    tone_hz: *tone_hz,
+                    output_db: *output_db,
+                });
             }
+
             (NodeProc::Pitch(p), NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants })
             | (NodeProc::PitchShift(p), NodeParams::PitchShift { pitch_semitones, formant_semitones, mix, preserve_formants }) => {
                 p.configure(*pitch_semitones, *formant_semitones, *mix, *preserve_formants);

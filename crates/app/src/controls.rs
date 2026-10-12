@@ -9,6 +9,7 @@ use eframe::egui::{self, Color32, Ui};
 use formant_core::dsp::compressor::{Character, Detector};
 use formant_core::dsp::deesser::{DeessDetection, DeessMode};
 use formant_core::dsp::gate::GateMode;
+use formant_core::dsp::saturator::SatKind;
 use formant_core::dsp::highpass::SLOPES;
 use formant_core::dsp::Scale;
 use formant_core::graph::hpf_slope;
@@ -195,8 +196,12 @@ pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
             Ctl::Toggle { label: "proportional Q", value: proportional_q, help: "Bells get narrower the more you boost or cut, like classic console EQs. Big moves stay focused; small ones stay broad." },
             bi_knob(output_db, "output", (-18.0, 18.0), "dB", 1, "Level after the EQ, to match loudness when comparing with bypass."),
         ],
-        P::Saturator { drive, mix } => vec![
-            knob(drive, "drive", (1.0, 8.0), "x", 1, "How hard the signal is pushed into saturation. More is warmer, then grittier."),
+        P::Saturator { drive, mix, kind, bias, tone_hz, output_db } => vec![
+            choice("type", kind, &SatKind::ALL, SatKind::label, "Soft is a smooth tanh curve. Hard clips flat. Tube is asymmetric and adds the warm second harmonic. Tape adds emphasis, a low head bump and a softened top."),
+            log_knob(drive, "drive", (1.0, 16.0), "x", 1, "How hard the signal is pushed into the curve. More is warmer, then grittier. Quiet sound stays at the same level."),
+            knob(bias, "bias", (0.0, 1.0), "", 2, "Tube and Tape: asymmetry. More adds even harmonics, the thick, warm kind."),
+            log_knob(tone_hz, "tone", (1000.0, 20000.0), "Hz", 0, "Low-pass after the saturation, to tame fizz. Fully up is open."),
+            bi_knob(output_db, "output", (-24.0, 12.0), "dB", 1, "Level after the saturator."),
             knob(mix, "mix", (0.0, 1.0), "", 2, "Blend of saturated and clean signal."),
         ],
         P::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants }
