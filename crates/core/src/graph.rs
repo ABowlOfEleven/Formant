@@ -23,6 +23,7 @@ use crate::dsp::compressor::{Character, CompressorSettings, Detector};
 use crate::dsp::deesser::{DeEsserSettings, DeessDetection, DeessMode};
 use crate::dsp::eq::EqSettings;
 use crate::dsp::gate::GateMode;
+use crate::dsp::limiter::LimiterSettings;
 use crate::engine::GateOverride;
 use crate::types::Sample;
 use crate::SAMPLE_RATE;
@@ -90,6 +91,16 @@ fn default_limiter_release() -> f32 {
 
 // Gate and de-esser defaults. Presets from before these fields existed load
 // with the same values a freshly added node gets.
+
+/// The limiter DSP settings for a `NodeParams::Limiter`.
+fn limiter_settings(p: &NodeParams) -> LimiterSettings {
+    match *p {
+        NodeParams::Limiter { ceiling_db, lookahead_ms, release_ms, drive_db, auto_release, true_peak } => {
+            LimiterSettings { ceiling_db, lookahead_ms, release_ms, drive_db, auto_release, true_peak }
+        }
+        _ => LimiterSettings::default(),
+    }
+}
 
 /// The EQ DSP settings for a `NodeParams::Eq`.
 fn eq_settings(p: &NodeParams) -> EqSettings {
@@ -372,6 +383,9 @@ impl NodeKind {
                 ceiling_db: -1.0,
                 lookahead_ms: default_limiter_lookahead(),
                 release_ms: default_limiter_release(),
+                drive_db: 0.0,
+                auto_release: false,
+                true_peak: true,
             },
             NodeKind::Gain => NodeParams::Gain { gain_db: 0.0 },
             NodeKind::Makeup => NodeParams::Makeup { gain_db: 0.0 },
@@ -556,6 +570,13 @@ pub enum NodeParams {
         lookahead_ms: f32,
         #[serde(default = "default_limiter_release")]
         release_ms: f32,
+        #[serde(default)]
+        drive_db: f32,
+        #[serde(default)]
+        auto_release: bool,
+        /// Older limiters always detected true peaks.
+        #[serde(default = "default_true")]
+        true_peak: bool,
     },
     Gain { gain_db: f32 },
     Makeup { gain_db: f32 },
@@ -912,6 +933,9 @@ impl Graph {
                 ceiling_db: -1.0,
                 lookahead_ms: default_limiter_lookahead(),
                 release_ms: default_limiter_release(),
+                drive_db: 0.0,
+                auto_release: false,
+                true_peak: true,
             },
             [1380.0, 240.0],
         );
@@ -945,7 +969,10 @@ fn node_latency(params: &NodeParams) -> usize {
     match params {
         NodeParams::Denoise => Denoise::latency(),
         NodeParams::Gate { lookahead_ms, .. } => ms_to_samples(*lookahead_ms),
-        NodeParams::Limiter { lookahead_ms, .. } => ms_to_samples(*lookahead_ms).max(1),
+        NodeParams::Limiter { lookahead_ms, true_peak, .. } => {
+            ms_to_samples(*lookahead_ms).max(1)
+                + if *true_peak { crate::dsp::oversample::latency_for(4) } else { 0 }
+        }
         NodeParams::Saturator { .. } => Saturator::latency(),
         // One analysis frame each, matching the sizes used to build them.
         NodeParams::Pitch { .. } => 1024,
@@ -1034,8 +1061,8 @@ impl NodeProc {
             NodeParams::Chorus { depth_ms, rate_hz, mix } => {
                 NodeProc::Chorus(Chorus::new(SAMPLE_RATE, depth_ms, rate_hz, mix))
             }
-            NodeParams::Limiter { ceiling_db, lookahead_ms, release_ms } => {
-                NodeProc::Limiter(Limiter::new(SAMPLE_RATE, ceiling_db, lookahead_ms, release_ms))
+            NodeParams::Limiter { .. } => {
+                NodeProc::Limiter(Limiter::new(SAMPLE_RATE, limiter_settings(params)))
             }
             NodeParams::Gain { gain_db } => NodeProc::Gain(SmoothedGain::new(SAMPLE_RATE, gain_db)),
             NodeParams::Makeup { gain_db } => NodeProc::Makeup(SmoothedGain::new(SAMPLE_RATE, gain_db)),
@@ -1117,11 +1144,8 @@ impl NodeProc {
             (NodeProc::Chorus(c), NodeParams::Chorus { depth_ms, rate_hz, mix }) => {
                 c.configure(*depth_ms, *rate_hz, *mix);
             }
-            (
-                NodeProc::Limiter(l),
-                NodeParams::Limiter { ceiling_db, lookahead_ms, release_ms },
-            ) => {
-                l.configure(*ceiling_db, *lookahead_ms, *release_ms);
+            (NodeProc::Limiter(l), p @ NodeParams::Limiter { .. }) => {
+                l.configure(limiter_settings(p));
             }
             (NodeProc::Gain(g), NodeParams::Gain { gain_db }) => {
                 g.set_db(*gain_db);
@@ -1629,7 +1653,9 @@ mod tests {
             ref other => panic!("wrong node: {other:?}"),
         }
         match g.node(7).unwrap().params {
-            NodeParams::Limiter { ceiling_db, lookahead_ms, release_ms } => {
+            NodeParams::Limiter { ceiling_db, lookahead_ms, release_ms, true_peak, drive_db, .. } => {
+                assert!(true_peak, "older limiters detected true peaks");
+                assert_eq!(drive_db, 0.0);
                 assert_eq!(ceiling_db, -1.0);
                 assert_eq!(lookahead_ms, default_limiter_lookahead());
                 assert_eq!(release_ms, default_limiter_release());

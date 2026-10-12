@@ -239,10 +239,13 @@ pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
             log_knob(rate_hz, "rate", (0.05, 8.0), "Hz", 2, "Speed of the wobble."),
             knob(mix, "mix", (0.0, 1.0), "", 2, "Blend of dry and chorused sound."),
         ],
-        P::Limiter { ceiling_db, lookahead_ms, release_ms } => vec![
+        P::Limiter { ceiling_db, lookahead_ms, release_ms, drive_db, auto_release, true_peak } => vec![
+            knob(drive_db, "drive", (0.0, 24.0), "dB", 1, "Push the level into the limiter. The output gets louder while the ceiling still holds."),
             knob(ceiling_db, "ceiling", (-24.0, 0.0), "dB", 1, "Nothing leaves louder than this."),
             knob(lookahead_ms, "look", (0.2, 10.0), "ms", 1, "How far ahead it looks, so it turns down before a peak instead of clipping it. Adds this much delay."),
             log_knob(release_ms, "release", (10.0, 1000.0), "ms", 0, "How fast the level comes back after a peak. Faster is louder, slower is smoother."),
+            Ctl::Toggle { label: "auto release", value: auto_release, help: "Recover quickly from single peaks and slowly during sustained limiting, which avoids pumping." },
+            Ctl::Toggle { label: "true peak", value: true_peak, help: "Also catch peaks that fall between samples, which can overshoot once a converter or codec reconstructs the waveform. Adds a fraction of a millisecond of delay." },
         ],
         P::Gain { gain_db } | P::Makeup { gain_db } => {
             vec![bi_knob(gain_db, "gain", (-24.0, 24.0), "dB", 1, "Volume adjustment.")]

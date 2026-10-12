@@ -232,7 +232,14 @@ fn deess(threshold_db: f32, ratio: f32, split_hz: f32, range_db: f32) -> NodePar
 }
 
 fn limiter(ceiling_db: f32) -> NodeParams {
-    NodeParams::Limiter { ceiling_db, lookahead_ms: 2.0, release_ms: 100.0 }
+    NodeParams::Limiter {
+        ceiling_db,
+        lookahead_ms: 2.0,
+        release_ms: 100.0,
+        drive_db: 0.0,
+        auto_release: false,
+        true_peak: true,
+    }
 }
 
 /// Tight, present, and controlled - the sound of someone reading the news.
