@@ -20,6 +20,7 @@ use crate::dsp::{
     PitchShifter, Reverb, Saturator, Scale, SmoothedGain,
 };
 use crate::dsp::compressor::{Character, CompressorSettings, Detector};
+use crate::dsp::deesser::{DeEsserSettings, DeessDetection, DeessMode};
 use crate::dsp::gate::GateMode;
 use crate::engine::GateOverride;
 use crate::types::Sample;
@@ -88,6 +89,23 @@ fn default_limiter_release() -> f32 {
 
 // Gate and de-esser defaults. Presets from before these fields existed load
 // with the same values a freshly added node gets.
+
+/// The de-esser DSP settings for a `NodeParams::DeEsser`.
+fn deess_settings(p: &NodeParams) -> DeEsserSettings {
+    match *p {
+        NodeParams::DeEsser {
+            threshold_db, ratio, split_hz, range_db, rel_threshold_db, q, mode, detection, listen,
+        } => DeEsserSettings { split_hz, threshold_db, rel_threshold_db, ratio, range_db, q, mode, detection, listen },
+        _ => DeEsserSettings::default(),
+    }
+}
+
+fn default_deess_rel_threshold() -> f32 {
+    -12.0
+}
+fn default_deess_q() -> f32 {
+    1.2
+}
 
 /// The compressor DSP settings for a `NodeParams::Compressor`.
 fn comp_settings(p: &NodeParams) -> CompressorSettings {
@@ -269,6 +287,11 @@ impl NodeKind {
                 ratio: 4.0,
                 split_hz: default_deess_split(),
                 range_db: 8.0,
+                rel_threshold_db: default_deess_rel_threshold(),
+                q: default_deess_q(),
+                mode: DeessMode::Split,
+                detection: DeessDetection::Relative,
+                listen: false,
             },
             // Gentle by default: a moderate ratio with a wide knee and an
             // unhurried release evens a voice out without announcing itself.
@@ -398,6 +421,17 @@ pub enum NodeParams {
         /// Cap on how much the sibilance band may be pulled down.
         #[serde(default = "default_deess_range")]
         range_db: f32,
+        #[serde(default = "default_deess_rel_threshold")]
+        rel_threshold_db: f32,
+        /// Width of the sibilance band. Older presets used a fixed 1.2.
+        #[serde(default = "default_deess_q")]
+        q: f32,
+        #[serde(default)]
+        mode: DeessMode,
+        #[serde(default)]
+        detection: DeessDetection,
+        #[serde(default)]
+        listen: bool,
     },
     Compressor {
         threshold_db: f32,
@@ -921,9 +955,7 @@ impl NodeProc {
                 gate.set_extras(mode, ratio, hysteresis_db, sc_hpf_hz, sc_lpf_hz);
                 NodeProc::Gate { gate, vad_gate }
             }
-            NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db } => {
-                NodeProc::DeEsser(DeEsser::new(SAMPLE_RATE, split_hz, threshold_db, ratio, range_db))
-            }
+            NodeParams::DeEsser { .. } => NodeProc::DeEsser(DeEsser::new(SAMPLE_RATE, deess_settings(params))),
             NodeParams::Compressor { .. } => {
                 NodeProc::Compressor(Compressor::new(SAMPLE_RATE, comp_settings(params)))
             }
@@ -1008,12 +1040,10 @@ impl NodeProc {
                 gate.set_extras(*mode, *ratio, *hysteresis_db, *sc_hpf_hz, *sc_lpf_hz);
                 *vad_gate = *vg;
             }
-            (
-                NodeProc::DeEsser(d),
-                NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db },
-            ) => {
-                d.configure(*split_hz, *threshold_db, *ratio, *range_db);
+            (NodeProc::DeEsser(d), p @ NodeParams::DeEsser { .. }) => {
+                d.configure(deess_settings(p));
             }
+
             (NodeProc::Compressor(c), p @ NodeParams::Compressor { .. }) => {
                 c.configure(comp_settings(p));
             }
@@ -1665,7 +1695,7 @@ mod tests {
             ),
         ] {
             match params_from_ron(old) {
-                NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db } => {
+                NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db, .. } => {
                     assert_eq!((threshold_db, ratio), (want_threshold, want_ratio));
                     assert_eq!(split_hz, default_deess_split());
                     assert_eq!(range_db, default_deess_range());

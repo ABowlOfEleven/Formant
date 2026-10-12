@@ -7,6 +7,7 @@
 
 use eframe::egui::{self, Color32, Ui};
 use formant_core::dsp::compressor::{Character, Detector};
+use formant_core::dsp::deesser::{DeessDetection, DeessMode};
 use formant_core::dsp::gate::GateMode;
 use formant_core::dsp::highpass::SLOPES;
 use formant_core::dsp::Scale;
@@ -132,12 +133,24 @@ pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
             knob(sc_hpf_hz, "SC HPF", (0.0, 4000.0), "Hz", 0, "Ignore everything below this when deciding to open, so rumble can't trigger it. 0 is off."),
             knob(sc_lpf_hz, "SC LPF", (0.0, 20000.0), "Hz", 0, "Ignore everything above this when deciding to open, so hiss can't trigger it. 0 is off."),
         ],
-        P::DeEsser { threshold_db, ratio, split_hz, range_db } => vec![
-            log_knob(split_hz, "freq", (2000.0, 12000.0), "Hz", 0, "Center of the sibilance band. Around 5 to 6 kHz for lower voices, 7 to 9 kHz for higher ones."),
-            knob(threshold_db, "thresh", (-60.0, 0.0), "dB", 0, "Lower catches more sibilance."),
-            log_knob(ratio, "ratio", (1.0, 20.0), ":1", 1, "How hard sibilance is pulled down once over the threshold."),
-            knob(range_db, "range", (0.0, 24.0), "dB", 0, "The most the sibilance band can ever be reduced. Keeps heavy de-essing from lisping."),
-        ],
+        P::DeEsser { threshold_db, ratio, split_hz, range_db, rel_threshold_db, q, mode, detection, listen } => {
+            let relative = *detection == DeessDetection::Relative;
+            let mut v = vec![
+                choice("mode", mode, &DeessMode::ALL, DeessMode::label, "Split pulls down only the sibilance band, leaving air and body alone. Wide turns the whole voice down during each ess, which is most transparent on very harsh ones."),
+                choice("detection", detection, &DeessDetection::ALL, DeessDetection::label, "Absolute compares the ess band to a fixed level. Relative compares it to the rest of your voice, so it works the same whether you whisper or shout."),
+                Ctl::Toggle { label: "listen", value: listen, help: "Hear only the band the de-esser is watching. Sweep the frequency until the esses are loudest, then turn this off." },
+                log_knob(split_hz, "freq", (2000.0, 12000.0), "Hz", 0, "Center of the sibilance band. Around 5 to 6 kHz for lower voices, 7 to 9 kHz for higher ones."),
+                log_knob(q, "width Q", (0.3, 6.0), "", 2, "How narrow the band is. Higher Q targets one ess frequency; lower Q covers s through sh."),
+            ];
+            if relative {
+                v.push(knob(rel_threshold_db, "rel thresh", (-30.0, 0.0), "dB", 0, "How loud the ess band can get relative to the rest of the voice before it is reduced."));
+            } else {
+                v.push(knob(threshold_db, "thresh", (-60.0, 0.0), "dB", 0, "Lower catches more sibilance."));
+            }
+            v.push(log_knob(ratio, "ratio", (1.0, 20.0), ":1", 1, "How hard sibilance is pulled down once over the threshold."));
+            v.push(knob(range_db, "range", (0.0, 24.0), "dB", 0, "The most the sibilance can ever be reduced. Keeps heavy de-essing from lisping."));
+            v
+        }
         P::Compressor {
             threshold_db, ratio, knee_db, attack_ms, release_ms, makeup_db, mix,
             detector, sc_hpf_hz, auto_release, auto_makeup, character,
@@ -224,19 +237,37 @@ pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
     })
 }
 
-/// Knob reset values for `params`'s node type, in the order its knobs appear.
-fn knob_defaults(params: &NodeParams) -> Vec<f32> {
+/// Knob reset values for `params`'s node type, by knob label. Matched by
+/// label rather than position because a node can show different knobs
+/// depending on a mode (the de-esser's absolute or relative threshold).
+fn knob_defaults(params: &NodeParams) -> Vec<(&'static str, f32)> {
     let mut d = params.kind().default_params();
-    node_controls(&mut d)
+    let mut out: Vec<(&'static str, f32)> = node_controls(&mut d)
         .map(|ctls| {
             ctls.into_iter()
                 .filter_map(|c| match c {
-                    Ctl::Knob { value, .. } => Some(*value),
+                    Ctl::Knob { value, spec, .. } => Some((spec.label, *value)),
                     _ => None,
                 })
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Knobs hidden in the factory default's mode still need a default: render
+    // the defaults again in the other mode and take whatever is new.
+    if let NodeParams::DeEsser { detection, .. } = &mut d {
+        *detection = match *detection {
+            DeessDetection::Absolute => DeessDetection::Relative,
+            DeessDetection::Relative => DeessDetection::Absolute,
+        };
+        for c in node_controls(&mut d).into_iter().flatten() {
+            if let Ctl::Knob { value, spec, .. } = c {
+                if !out.iter().any(|(l, _)| *l == spec.label) {
+                    out.push((spec.label, *value));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Draw a node's controls. Returns true if anything changed. `None` means the
@@ -245,22 +276,20 @@ pub fn draw(ui: &mut Ui, params: &mut NodeParams, accent: Color32) -> Option<boo
     let defaults = knob_defaults(params);
     let ctls = node_controls(params)?;
     let mut changed = false;
-    let mut knob_i = 0;
     let knob_d = 60.0;
 
     // Group consecutive knobs into wrapping rows; everything else gets a row.
     let mut row: Vec<Ctl> = Vec::new();
-    let flush = |ui: &mut Ui, row: &mut Vec<Ctl>, changed: &mut bool, knob_i: &mut usize| {
+    let flush = |ui: &mut Ui, row: &mut Vec<Ctl>, changed: &mut bool| {
         if row.is_empty() {
             return;
         }
         ui.horizontal_wrapped(|ui| {
             for c in row.drain(..) {
                 if let Ctl::Knob { value, mut spec, help } = c {
-                    if let Some(&d) = defaults.get(*knob_i) {
+                    if let Some(&(_, d)) = defaults.iter().find(|(l, _)| *l == spec.label) {
                         spec.default = d;
                     }
-                    *knob_i += 1;
                     *changed |= hw::knob(ui, value, &spec, accent, knob_d).on_hover_text(help).changed();
                 }
             }
@@ -271,7 +300,7 @@ pub fn draw(ui: &mut Ui, params: &mut NodeParams, accent: Color32) -> Option<boo
         match c {
             Ctl::Knob { .. } => row.push(c),
             other => {
-                flush(ui, &mut row, &mut changed, &mut knob_i);
+                flush(ui, &mut row, &mut changed);
                 match other {
                     Ctl::Section(title) => {
                         ui.add_space(4.0);
@@ -319,7 +348,7 @@ pub fn draw(ui: &mut Ui, params: &mut NodeParams, accent: Color32) -> Option<boo
             }
         }
     }
-    flush(ui, &mut row, &mut changed, &mut knob_i);
+    flush(ui, &mut row, &mut changed);
     Some(changed)
 }
 

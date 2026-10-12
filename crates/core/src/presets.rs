@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::dsp::compressor::{Character, Detector};
+use crate::dsp::deesser::{DeessDetection, DeessMode};
 use crate::graph::{Graph, NodeKind, NodeParams};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -202,7 +203,17 @@ fn comp(
 }
 
 fn deess(threshold_db: f32, ratio: f32, split_hz: f32, range_db: f32) -> NodeParams {
-    NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db }
+    NodeParams::DeEsser {
+        threshold_db,
+        ratio,
+        split_hz,
+        range_db,
+        rel_threshold_db: -12.0,
+        q: 1.2,
+        mode: DeessMode::Split,
+        detection: DeessDetection::Absolute,
+        listen: false,
+    }
 }
 
 fn limiter(ceiling_db: f32) -> NodeParams {
@@ -299,6 +310,7 @@ mod tests {
     #[test]
     fn factory_presets_process_audio_cleanly() {
         use crate::dsp::compressor::{Character, Detector};
+use crate::dsp::deesser::{DeessDetection, DeessMode};
 use crate::graph::GraphProcessor;
         for preset in Preset::factory() {
             let mut proc = GraphProcessor::new(&preset.graph);
@@ -328,6 +340,7 @@ use crate::graph::GraphProcessor;
     #[test]
     fn factory_presets_hold_their_ceiling_when_slammed() {
         use crate::dsp::compressor::{Character, Detector};
+use crate::dsp::deesser::{DeessDetection, DeessMode};
 use crate::graph::GraphProcessor;
         for preset in Preset::factory() {
             let mut proc = GraphProcessor::new(&preset.graph);
@@ -350,6 +363,7 @@ use crate::graph::GraphProcessor;
     #[test]
     fn vst_param_values_persist() {
         use crate::dsp::compressor::{Character, Detector};
+use crate::dsp::deesser::{DeessDetection, DeessMode};
 use crate::graph::{Graph, NodeParams};
         let mut g = Graph::default_chain();
         let id = g.add_node(

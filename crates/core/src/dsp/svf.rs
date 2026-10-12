@@ -20,6 +20,8 @@ use std::f64::consts::PI;
 pub enum SvfShape {
     LowPass,
     HighPass,
+    /// Band-pass with a 0 dB peak at the center (the cookbook's "constant 0 dB
+    /// peak gain" form), so it can be subtracted back out of the signal.
     BandPass,
     /// Peaking bell with `gain_db` at the center.
     Bell,
@@ -59,7 +61,7 @@ impl Svf {
         let (m0, m1, m2) = match shape {
             SvfShape::LowPass => (0.0, 0.0, 1.0),
             SvfShape::HighPass => (1.0, -k, -1.0),
-            SvfShape::BandPass => (0.0, 1.0, 0.0),
+            SvfShape::BandPass => (0.0, k, 0.0),
             SvfShape::Bell => {
                 k = 1.0 / (q * a);
                 (1.0, k * (a * a - 1.0), 0.0)
@@ -204,6 +206,9 @@ mod tests {
         assert!((gain_at(&mut |x| bell.process(x), 1000.0) - 6.0).abs() < 0.2, "bell +6 at center");
         let mut bell = Svf::new(SvfShape::Bell, sr, 1000.0, 1.0, 6.0);
         assert!(gain_at(&mut |x| bell.process(x), 100.0).abs() < 0.3, "bell flat far away");
+
+        let mut bp = Svf::new(SvfShape::BandPass, sr, 6500.0, 1.2, 0.0);
+        assert!(gain_at(&mut |x| bp.process(x), 6500.0).abs() < 0.2, "band-pass 0 dB at center");
 
         let mut ls = Svf::new(SvfShape::LowShelf, sr, 200.0, 0.7071, -6.0);
         assert!((gain_at(&mut |x| ls.process(x), 30.0) + 6.0).abs() < 0.3, "low shelf -6 below");
