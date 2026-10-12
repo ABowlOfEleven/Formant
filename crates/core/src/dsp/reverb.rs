@@ -133,6 +133,17 @@ impl Room {
             allpasses: ALLPASS_TUNINGS.iter().map(|&t| FvAllpass::new((t as f32 * scale) as usize)).collect(),
         }
     }
+    /// Silence the tail (used when switching to this algorithm).
+    fn reset(&mut self) {
+        for c in &mut self.combs {
+            c.buf.fill(0.0);
+            c.store = 0.0;
+        }
+        for a in &mut self.allpasses {
+            a.buf.fill(0.0);
+        }
+    }
+
     fn configure(&mut self, room_size: f32, damping: f32) {
         let feedback = room_size.clamp(0.0, 1.0) * 0.28 + 0.7;
         let damp1 = damping.clamp(0.0, 1.0) * 0.4;
@@ -253,6 +264,8 @@ struct Plate {
     phase: f32,
     phase_inc: f32,
     scale: f32,
+    /// `TAPS` offsets scaled to the sample rate, computed once.
+    tap_offsets: [usize; 7],
 }
 
 impl Plate {
@@ -275,6 +288,35 @@ impl Plate {
             phase: 0.0,
             phase_inc: MOD_HZ / sample_rate as f32,
             scale,
+            tap_offsets: std::array::from_fn(|i| (TAPS[i].1 as f32 * scale).round() as usize),
+        }
+    }
+
+    /// Silence the tail (used when switching to this algorithm).
+    fn reset(&mut self) {
+        self.bw_state = 0.0;
+        self.damp_state = [0.0; 2];
+        for (ap, _) in &mut self.diffusers {
+            ap.line.buf.fill(0.0);
+        }
+        for side in 0..2 {
+            self.mod_ap[side].line.buf.fill(0.0);
+            self.delay1[side].buf.fill(0.0);
+            self.ap2[side].line.buf.fill(0.0);
+            self.delay2[side].buf.fill(0.0);
+        }
+    }
+
+    /// Value `d` samples back on output line `line` (see `TAPS`).
+    #[inline]
+    fn tap(&self, line: usize, d: usize) -> f32 {
+        match line {
+            0 => self.delay1[1].tap(d),
+            1 => self.ap2[1].line.tap(d),
+            2 => self.delay2[1].tap(d),
+            3 => self.delay1[0].tap(d),
+            4 => self.ap2[0].line.tap(d),
+            _ => self.delay2[0].tap(d),
         }
     }
 
@@ -310,18 +352,9 @@ impl Plate {
         }
 
         // Mono output from the left tap set.
-        let s = self.scale;
-        let lines: [&dyn Fn(usize) -> f32; 6] = [
-            &|d| self.delay1[1].tap(d),
-            &|d| self.ap2[1].line.tap(d),
-            &|d| self.delay2[1].tap(d),
-            &|d| self.delay1[0].tap(d),
-            &|d| self.ap2[0].line.tap(d),
-            &|d| self.delay2[0].tap(d),
-        ];
         let mut y = 0.0;
-        for &(line, off, sign) in &TAPS {
-            y += sign * lines[line]((off as f32 * s).round() as usize);
+        for (&(line, _, sign), &d) in TAPS.iter().zip(&self.tap_offsets) {
+            y += sign * self.tap(line, d);
         }
         y * 0.6
     }
@@ -360,6 +393,14 @@ impl Reverb {
     }
 
     pub fn configure(&mut self, s: ReverbSettings) {
+        if s.kind != self.kind {
+            // The newly chosen algorithm still holds whatever tail it had when
+            // it was last used; clear it so switching back cannot replay it.
+            match s.kind {
+                ReverbKind::Room => self.room.reset(),
+                ReverbKind::Plate => self.plate.reset(),
+            }
+        }
         self.kind = s.kind;
         self.room.configure(s.room_size, s.damping);
         self.plate.configure(s.room_size, s.damping, s.modulation);
@@ -454,6 +495,22 @@ mod tests {
         let last = *w.last().unwrap();
         let peak = w.iter().cloned().fold(0.0, f64::max);
         assert!(last < peak, "maximum size must still decay");
+    }
+
+    /// Switching type and back must not replay an old tail.
+    #[test]
+    fn switching_type_does_not_replay_a_stale_tail() {
+        let mut r = reverb(|s| s.kind = ReverbKind::Plate);
+        for i in 0..24_000 {
+            r.process(if i < 4800 { 0.5 * (i as f32 * 0.05).sin() } else { 0.0 });
+        }
+        let mut s = ReverbSettings { mix: 1.0, predelay_ms: 0.0, lowcut_hz: 0.0, highcut_hz: 20_000.0, ..Default::default() };
+        s.kind = ReverbKind::Room;
+        r.configure(s);
+        s.kind = ReverbKind::Plate;
+        r.configure(s);
+        let tail: f32 = (0..4800).map(|_| r.process(0.0).abs()).sum();
+        assert!(tail < 1e-6, "stale plate tail replayed: {tail}");
     }
 
     #[test]

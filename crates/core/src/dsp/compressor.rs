@@ -148,6 +148,9 @@ pub struct Compressor {
     opto_attack: f32,
     opto_fast: f32,
     reduction: f32,
+    /// FET coloration: slow level of the threshold-normalized signal.
+    fet_env: f32,
+    fet_coef: f32,
     makeup: Smoothed,
     mix: Smoothed,
 }
@@ -169,6 +172,8 @@ impl Compressor {
             opto_attack: time_to_coef(OPTO_ATTACK_MS, sample_rate),
             opto_fast: time_to_coef(OPTO_FAST_RELEASE_MS, sample_rate),
             reduction: 0.0,
+            fet_env: 0.0,
+            fet_coef: time_to_coef(30.0, sample_rate),
             makeup: Smoothed::new(1.0, sample_rate, GLIDE_MS),
             mix: Smoothed::new(1.0, sample_rate, GLIDE_MS),
         };
@@ -267,7 +272,14 @@ impl Compressor {
             if k > 0.0 {
                 let thr = db_to_lin(self.s.threshold_db) * self.makeup.current();
                 let v = wet / thr;
-                wet = thr * ((1.0 - k) * v + k * v.tanh());
+                // Track the signal's level relative to the threshold slowly,
+                // and divide out the shaper's gain at that level. The shape
+                // within each cycle (the harmonics) stays; the overall level
+                // the curve would otherwise take away comes back.
+                self.fet_env = self.fet_coef * self.fet_env + (1.0 - self.fet_coef) * v.abs();
+                let e = self.fet_env.max(1e-6);
+                let gain = ((1.0 - k) * e + k * e.tanh()) / e;
+                wet = thr * ((1.0 - k) * v + k * v.tanh()) / gain;
             }
         }
         let mix = self.mix.next();
@@ -522,6 +534,26 @@ mod tests {
         let loud = third(0.8);
         assert!(quiet < 1e-4, "harmonics with no reduction: {quiet}");
         assert!(loud > 1e-3, "no harmonics while compressing: {loud}");
+    }
+
+    /// The coloration adds harmonics without taking level away: on loud
+    /// material FET and Clean at the same settings land within 1 dB.
+    #[test]
+    fn fet_color_does_not_cost_level() {
+        let level = |character: Character| {
+            let mut c = with(|s| {
+                s.threshold_db = -40.0;
+                s.ratio = 8.0;
+                s.character = character;
+                s.detector = Detector::Peak;
+                s.auto_release = true;
+            });
+            let (_, out) = tone(&mut c, 0.8, 1.0);
+            out
+        };
+        let (fet, clean) = (level(Character::Fet), level(Character::Clean));
+        let db = 10.0 * (fet / clean).log10();
+        assert!(db.abs() < 1.0, "FET is {db:.2} dB from Clean");
     }
 
     fn goertzel(x: &[f32], freq: f32) -> f32 {

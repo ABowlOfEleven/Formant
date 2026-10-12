@@ -138,7 +138,8 @@ impl Gate {
         }
     }
 
-    /// Mode, expander ratio, hysteresis and sidechain filters (0 Hz = off).
+    /// Mode, expander ratio, hysteresis and sidechain filters (high-pass off
+    /// at 0 Hz, low-pass off at 19.5 kHz and up).
     pub fn set_extras(&mut self, mode: GateMode, ratio: f32, hysteresis_db: f32, sc_hpf_hz: f32, sc_lpf_hz: f32) {
         self.mode = mode;
         self.ratio = ratio.max(1.0);
@@ -156,7 +157,9 @@ impl Gate {
             }
         };
         set(&mut self.sc_hp, SvfShape::HighPass, sc_hpf_hz);
-        set(&mut self.sc_lp, SvfShape::LowPass, sc_lpf_hz);
+        // A low-pass is "off" at the top of its range (and 0, for safety).
+        let lp = if sc_lpf_hz >= 19_500.0 { 0.0 } else { sc_lpf_hz };
+        set(&mut self.sc_lp, SvfShape::LowPass, lp);
     }
 
     /// Lookahead latency in samples (0 when disabled).

@@ -778,7 +778,7 @@ impl FormantApp {
                         ui.set_width(side);
                         let bypassed = self.engine.controls.global_bypass();
                         let (label, col) = if bypassed { ("BYPASSED", theme::EMBER) } else { ("PROCESSING", theme::GOOD) };
-                        if hw::led_toggle(ui, label, !bypassed, col, side)
+                        if hw::led_toggle_named(ui, label, "Processing", !bypassed, col, side)
                             .on_hover_text("Turn ALL processing off - passes your raw mic straight through.")
                             .clicked()
                         {
@@ -910,7 +910,7 @@ impl FormantApp {
 
                     let mut params = node.params.clone();
                     let mut changed = false;
-                    match primary_knob(&mut params) {
+                    match crate::controls::primary_knob(&mut params) {
                         Some((value, spec, help)) => {
                             changed |= hw::knob(ui, value, &spec, accent, 70.0).on_hover_text(help).changed();
                         }
@@ -1569,65 +1569,6 @@ fn tab_button(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
 /// The dark rack the panels sit in.
 fn paint_backdrop(ui: &egui::Ui) {
     hw::rack_backdrop(ui.painter(), ui.max_rect());
-}
-
-/// A node's main control as a knob spec, for its channel module. The knob's
-/// reset value is the node's factory default. Returns `None` for nodes with no
-/// single main control.
-fn primary_knob(params: &mut NodeParams) -> Option<(&mut f32, hw::KnobSpec, &'static str)> {
-    let mut defaults = params.kind().default_params();
-    let default = primary_control(&mut defaults).map(|(v, ..)| *v).unwrap_or(0.0);
-    primary_control(params).map(|(v, mut spec, help)| {
-        spec.default = default;
-        (v, spec, help)
-    })
-}
-
-fn primary_control(params: &mut NodeParams) -> Option<(&mut f32, hw::KnobSpec, &'static str)> {
-    let spec = |label, min, max, log, bipolar, unit, decimals| hw::KnobSpec {
-        label,
-        min,
-        max,
-        default: min,
-        log,
-        bipolar,
-        unit,
-        decimals,
-    };
-    Some(match params {
-        NodeParams::HighPass { cutoff_hz, .. } => {
-            (cutoff_hz, spec("cutoff", 20.0, 400.0, true, false, "Hz", 0), "Cutoff: frequencies below this are removed.")
-        }
-        NodeParams::Gate { threshold_db, .. } => {
-            (threshold_db, spec("thresh", -80.0, 0.0, false, false, "dB", 0), "Gate threshold: how loud you must be to open the mic.")
-        }
-        NodeParams::DeEsser { threshold_db, .. } => {
-            (threshold_db, spec("thresh", -60.0, 0.0, false, false, "dB", 0), "De-ess threshold: lower tames more sibilance.")
-        }
-        NodeParams::Compressor { threshold_db, .. } => {
-            (threshold_db, spec("thresh", -60.0, 0.0, false, false, "dB", 0), "Compressor threshold: lower evens out more of your voice.")
-        }
-        NodeParams::Eq { mid_db, .. } => (mid_db, spec("mid", -12.0, 12.0, false, true, "dB", 1), "Mid boost or cut (presence)."),
-        NodeParams::Saturator { drive, .. } => {
-            (drive, spec("drive", 1.0, 8.0, false, false, "", 1), "Saturation drive: more is warmer and grittier.")
-        }
-        NodeParams::Pitch { pitch_semitones, .. } | NodeParams::PitchShift { pitch_semitones, .. } => {
-            (pitch_semitones, spec("pitch", -12.0, 12.0, false, true, "st", 1), "Pitch shift in semitones.")
-        }
-        NodeParams::Autotune { strength, .. } => {
-            (strength, spec("amount", 0.0, 1.0, false, false, "", 2), "Autotune strength: how hard notes are pulled to the scale.")
-        }
-        NodeParams::Reverb { mix, .. } | NodeParams::Delay { mix, .. } | NodeParams::Chorus { mix, .. } => {
-            (mix, spec("mix", 0.0, 1.0, false, false, "", 2), "Dry/wet blend.")
-        }
-        NodeParams::Limiter { ceiling_db, .. } => {
-            (ceiling_db, spec("ceiling", -24.0, 0.0, false, false, "dB", 1), "Output ceiling: nothing gets louder than this.")
-        }
-        NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } | NodeParams::Mix { gain_db } => {
-            (gain_db, spec("gain", -24.0, 24.0, false, true, "dB", 1), "Volume in decibels.")
-        }
-        _ => return None,
-    })
 }
 
 /// Spectrum bars for the master screen, low frequencies on the left. Lit bars

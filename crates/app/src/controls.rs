@@ -96,6 +96,12 @@ fn choice<'a, T: Copy + PartialEq + 'a>(
 /// The controls for a node, or `None` for nodes drawn some other way (plugins)
 /// or with nothing to set.
 pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
+    controls_for(params, false)
+}
+
+/// `all` also lists knobs the current mode hides (the de-esser shows only the
+/// threshold for its detection mode), so their reset values can be found.
+fn controls_for(params: &mut NodeParams, all: bool) -> Option<Vec<Ctl<'_>>> {
     use NodeParams as P;
     Some(match params {
         P::HighPass { cutoff_hz, steep, slope_db } => {
@@ -133,7 +139,7 @@ pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
             knob(lookahead_ms, "look", (0.0, 40.0), "ms", 0, "Opens the gate just before a word starts, so onsets aren't clipped. Adds this much delay."),
             Ctl::Section("sidechain"),
             knob(sc_hpf_hz, "SC HPF", (0.0, 4000.0), "Hz", 0, "Ignore everything below this when deciding to open, so rumble can't trigger it. 0 is off."),
-            knob(sc_lpf_hz, "SC LPF", (0.0, 20000.0), "Hz", 0, "Ignore everything above this when deciding to open, so hiss can't trigger it. 0 is off."),
+            log_knob(sc_lpf_hz, "SC LPF", (1000.0, 20000.0), "Hz", 0, "Ignore everything above this when deciding to open, so hiss can't trigger it. Fully up is off."),
         ],
         P::DeEsser { threshold_db, ratio, split_hz, range_db, rel_threshold_db, q, mode, detection, listen } => {
             let relative = *detection == DeessDetection::Relative;
@@ -144,9 +150,10 @@ pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
                 log_knob(split_hz, "freq", (2000.0, 12000.0), "Hz", 0, "Center of the sibilance band. Around 5 to 6 kHz for lower voices, 7 to 9 kHz for higher ones."),
                 log_knob(q, "width Q", (0.3, 6.0), "", 2, "How narrow the band is. Higher Q targets one ess frequency; lower Q covers s through sh."),
             ];
-            if relative {
+            if relative || all {
                 v.push(knob(rel_threshold_db, "rel thresh", (-30.0, 0.0), "dB", 0, "How loud the ess band can get relative to the rest of the voice before it is reduced."));
-            } else {
+            }
+            if !relative || all {
                 v.push(knob(threshold_db, "thresh", (-60.0, 0.0), "dB", 0, "Lower catches more sibilance."));
             }
             v.push(log_knob(ratio, "ratio", (1.0, 20.0), ":1", 1, "How hard sibilance is pulled down once over the threshold."));
@@ -288,10 +295,10 @@ pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
 
 /// Knob reset values for `params`'s node type, by knob label. Matched by
 /// label rather than position because a node can show different knobs
-/// depending on a mode (the de-esser's absolute or relative threshold).
+/// depending on a mode; listing every knob (hidden ones included) covers them.
 fn knob_defaults(params: &NodeParams) -> Vec<(&'static str, f32)> {
     let mut d = params.kind().default_params();
-    let mut out: Vec<(&'static str, f32)> = node_controls(&mut d)
+    controls_for(&mut d, true)
         .map(|ctls| {
             ctls.into_iter()
                 .filter_map(|c| match c {
@@ -300,23 +307,45 @@ fn knob_defaults(params: &NodeParams) -> Vec<(&'static str, f32)> {
                 })
                 .collect()
         })
-        .unwrap_or_default();
-    // Knobs hidden in the factory default's mode still need a default: render
-    // the defaults again in the other mode and take whatever is new.
-    if let NodeParams::DeEsser { detection, .. } = &mut d {
-        *detection = match *detection {
-            DeessDetection::Absolute => DeessDetection::Relative,
-            DeessDetection::Relative => DeessDetection::Absolute,
-        };
-        for c in node_controls(&mut d).into_iter().flatten() {
-            if let Ctl::Knob { value, spec, .. } = c {
-                if !out.iter().any(|(l, _)| *l == spec.label) {
-                    out.push((spec.label, *value));
-                }
+        .unwrap_or_default()
+}
+
+/// The label of each node type's main knob, shown on its Mixer channel.
+fn primary_label(params: &NodeParams) -> Option<&'static str> {
+    use NodeParams as P;
+    Some(match params {
+        P::HighPass { .. } => "cutoff",
+        P::Gate { .. } | P::Compressor { .. } => "thresh",
+        P::DeEsser { detection, .. } => match detection {
+            DeessDetection::Relative => "rel thresh",
+            DeessDetection::Absolute => "thresh",
+        },
+        P::Eq { .. } => "mid",
+        P::Saturator { .. } => "drive",
+        P::Pitch { .. } | P::PitchShift { .. } => "pitch",
+        P::Autotune { .. } => "amount",
+        P::Reverb { .. } | P::Delay { .. } | P::Chorus { .. } => "mix",
+        P::Limiter { .. } => "ceiling",
+        P::Gain { .. } | P::Makeup { .. } => "gain",
+        P::Mix { .. } => "output",
+        P::Vst3 { .. } | P::Denoise | P::Input | P::Output => return None,
+    })
+}
+
+/// A node's main control for its Mixer channel: the same knob, range and help
+/// the inspector shows, so the two can never disagree.
+pub fn primary_knob(params: &mut NodeParams) -> Option<(&mut f32, KnobSpec, &'static str)> {
+    let label = primary_label(params)?;
+    let default = knob_defaults(params).into_iter().find(|(l, _)| *l == label).map(|(_, v)| v);
+    node_controls(params)?.into_iter().find_map(|c| match c {
+        Ctl::Knob { value, mut spec, help } if spec.label == label => {
+            if let Some(d) = default {
+                spec.default = d;
             }
+            Some((value, spec, help))
         }
-    }
-    out
+        _ => None,
+    })
 }
 
 /// Draw a node's controls. Returns true if anything changed. `None` means the
@@ -405,6 +434,31 @@ pub fn draw(ui: &mut Ui, params: &mut NodeParams, accent: Color32) -> Option<boo
 mod tests {
     use super::*;
     use formant_core::NodeKind;
+
+    /// Every effect with controls has a Mixer knob, it is one of the
+    /// inspector's own knobs, and for the de-esser it follows the detection
+    /// mode (the threshold the mode actually uses).
+    #[test]
+    fn mixer_knob_comes_from_the_inspector_list() {
+        for kind in NodeKind::EFFECTS {
+            let mut p = kind.default_params();
+            if matches!(kind, NodeKind::Denoise | NodeKind::Vst3) {
+                assert!(primary_knob(&mut p).is_none());
+                continue;
+            }
+            let (_, spec, _) = primary_knob(&mut p).unwrap_or_else(|| panic!("{kind:?} has no Mixer knob"));
+            let mut q = kind.default_params();
+            let listed = node_controls(&mut q).unwrap().into_iter().any(|c| matches!(c, Ctl::Knob { spec: s, .. } if s.label == spec.label && s.min == spec.min && s.max == spec.max));
+            assert!(listed, "{kind:?}: Mixer knob {} is not the inspector's", spec.label);
+        }
+        for (detection, label) in [(DeessDetection::Relative, "rel thresh"), (DeessDetection::Absolute, "thresh")] {
+            let mut p = NodeKind::DeEsser.default_params();
+            if let NodeParams::DeEsser { detection: d, .. } = &mut p {
+                *d = detection;
+            }
+            assert_eq!(primary_knob(&mut p).unwrap().1.label, label);
+        }
+    }
 
     /// Every built-in effect lists its controls, and every knob's factory
     /// default lies inside the knob's range (or reset would jump to an end).

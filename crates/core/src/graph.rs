@@ -325,7 +325,7 @@ impl NodeKind {
                 ratio: default_gate_ratio(),
                 hysteresis_db: 4.0,
                 sc_hpf_hz: 80.0,
-                sc_lpf_hz: 0.0,
+                sc_lpf_hz: 20_000.0,
             },
             NodeKind::DeEsser => NodeParams::DeEsser {
                 threshold_db: -28.0,
@@ -495,10 +495,11 @@ pub enum NodeParams {
         /// fixed 6 dB.
         #[serde(default = "default_gate_hysteresis")]
         hysteresis_db: f32,
-        /// Detector filters; 0 is off.
+        /// Detector filters: the high-pass is off at 0, the low-pass at the
+        /// top of its range.
         #[serde(default)]
         sc_hpf_hz: f32,
-        #[serde(default)]
+        #[serde(default = "default_tone_off")]
         sc_lpf_hz: f32,
     },
     DeEsser {
@@ -983,7 +984,7 @@ impl Graph {
                 ratio: default_gate_ratio(),
                 hysteresis_db: 4.0,
                 sc_hpf_hz: 80.0,
-                sc_lpf_hz: 0.0,
+                sc_lpf_hz: 20_000.0,
             },
             [490.0, 240.0],
         );
