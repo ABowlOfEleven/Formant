@@ -1,5 +1,6 @@
 //! Three-band parametric EQ (low shelf, mid peak, high shelf).
 
+use crate::dsp::smooth::{Smoothed, StepClock, FILTER_STEP, GLIDE_MS};
 use crate::dsp::Biquad;
 use crate::types::Sample;
 
@@ -22,7 +23,20 @@ pub struct Eq {
     low: Biquad,
     mid: Biquad,
     high: Biquad,
+    /// Every control glides (frequencies and Q in log2), so turning a knob
+    /// sweeps the filter instead of stepping it.
+    params: [Smoothed; 7],
+    clock: StepClock,
 }
+
+/// Indices into `Eq::params`.
+const LOW_DB: usize = 0;
+const LOW_HZ: usize = 1;
+const MID_DB: usize = 2;
+const MID_HZ: usize = 3;
+const MID_Q: usize = 4;
+const HIGH_DB: usize = 5;
+const HIGH_HZ: usize = 6;
 
 impl Eq {
     /// Flat EQ - passes audio through unchanged until bands are dialed in.
@@ -50,17 +64,25 @@ impl Eq {
         high_db: f32,
         high_hz: f32,
     ) -> Self {
+        let s = |v: f32| Smoothed::new(v, sample_rate, GLIDE_MS);
         let mut eq = Self {
             sample_rate,
-            low: Biquad::low_shelf(sample_rate, low_hz, 0.707, low_db),
-            mid: Biquad::peaking(sample_rate, mid_hz, mid_q, mid_db),
-            high: Biquad::high_shelf(sample_rate, high_hz, 0.707, high_db),
+            low: Biquad::low_shelf(sample_rate, DEFAULT_LOW_HZ, 0.707, 0.0),
+            mid: Biquad::peaking(sample_rate, DEFAULT_MID_HZ, DEFAULT_MID_Q, 0.0),
+            high: Biquad::high_shelf(sample_rate, DEFAULT_HIGH_HZ, 0.707, 0.0),
+            params: [s(0.0), s(0.0), s(0.0), s(0.0), s(0.0), s(0.0), s(0.0)],
+            clock: StepClock::default(),
         };
         eq.set_bands(low_db, low_hz, mid_db, mid_hz, mid_q, high_db, high_hz);
+        for p in &mut eq.params {
+            p.snap(p.target());
+        }
+        eq.retune();
         eq
     }
 
-    /// Recompute every band (used when the UI edits the EQ).
+    /// Aim every band at new settings (used when the UI edits the EQ). The
+    /// filters glide there over the next few milliseconds without resetting.
     #[allow(clippy::too_many_arguments)]
     pub fn set_bands(
         &mut self,
@@ -73,20 +95,36 @@ impl Eq {
         high_hz: f32,
     ) {
         let nyquist = self.sample_rate as f32 * 0.49;
-        let low_hz = low_hz.clamp(20.0, nyquist);
-        let mid_hz = mid_hz.clamp(20.0, nyquist);
-        let high_hz = high_hz.clamp(20.0, nyquist);
-        self.low = Biquad::low_shelf(self.sample_rate, low_hz, 0.707, low_db);
-        self.mid = Biquad::peaking(self.sample_rate, mid_hz, mid_q.clamp(0.1, 10.0), mid_db);
-        self.high = Biquad::high_shelf(self.sample_rate, high_hz, 0.707, high_db);
+        let hz = |f: f32| f.clamp(20.0, nyquist).log2();
+        self.params[LOW_DB].set(low_db);
+        self.params[LOW_HZ].set(hz(low_hz));
+        self.params[MID_DB].set(mid_db);
+        self.params[MID_HZ].set(hz(mid_hz));
+        self.params[MID_Q].set(mid_q.clamp(0.1, 10.0).log2());
+        self.params[HIGH_DB].set(high_db);
+        self.params[HIGH_HZ].set(hz(high_hz));
+    }
+
+    /// Recompute all three bands from the current (gliding) settings.
+    fn retune(&mut self) {
+        let p = |i: usize| self.params[i].current();
+        let sr = self.sample_rate;
+        self.low.retune(&Biquad::low_shelf(sr, p(LOW_HZ).exp2(), 0.707, p(LOW_DB)));
+        self.mid.retune(&Biquad::peaking(sr, p(MID_HZ).exp2(), p(MID_Q).exp2(), p(MID_DB)));
+        self.high.retune(&Biquad::high_shelf(sr, p(HIGH_HZ).exp2(), 0.707, p(HIGH_DB)));
     }
 
     #[inline]
     pub fn process(&mut self, x: Sample) -> Sample {
+        if self.clock.tick() && self.params.iter().any(|p| !p.settled()) {
+            for p in &mut self.params {
+                p.advance(FILTER_STEP);
+            }
+            self.retune();
+        }
         self.high.process(self.mid.process(self.low.process(x)))
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

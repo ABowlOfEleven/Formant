@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dsp::{
     Autotune, Chorus, Compressor, DeEsser, Delay, Denoise, Eq, Gate, HighPass, Limiter,
-    PitchShifter, Reverb, Saturator, Scale,
+    PitchShifter, Reverb, Saturator, Scale, SmoothedGain,
 };
 use crate::engine::GateOverride;
 use crate::types::Sample;
@@ -812,10 +812,10 @@ enum NodeProc {
     Delay(Delay),
     Chorus(Chorus),
     Limiter(Limiter),
-    Gain(f32),
-    Makeup(f32),
+    Gain(SmoothedGain),
+    Makeup(SmoothedGain),
     /// Output trim applied after the executor has summed the node's inputs.
-    Mix(f32),
+    Mix(SmoothedGain),
 }
 
 impl NodeProc {
@@ -892,9 +892,9 @@ impl NodeProc {
             NodeParams::Limiter { ceiling_db, lookahead_ms, release_ms } => {
                 NodeProc::Limiter(Limiter::new(SAMPLE_RATE, ceiling_db, lookahead_ms, release_ms))
             }
-            NodeParams::Gain { gain_db } => NodeProc::Gain(crate::dsp::db_to_lin(gain_db)),
-            NodeParams::Makeup { gain_db } => NodeProc::Makeup(crate::dsp::db_to_lin(gain_db)),
-            NodeParams::Mix { gain_db } => NodeProc::Mix(crate::dsp::db_to_lin(gain_db)),
+            NodeParams::Gain { gain_db } => NodeProc::Gain(SmoothedGain::new(SAMPLE_RATE, gain_db)),
+            NodeParams::Makeup { gain_db } => NodeProc::Makeup(SmoothedGain::new(SAMPLE_RATE, gain_db)),
+            NodeParams::Mix { gain_db } => NodeProc::Mix(SmoothedGain::new(SAMPLE_RATE, gain_db)),
         }
     }
 
@@ -925,7 +925,7 @@ impl NodeProc {
     fn set_params(&mut self, params: &NodeParams) {
         match (self, params) {
             (NodeProc::HighPass(b), NodeParams::HighPass { cutoff_hz, steep }) => {
-                *b = HighPass::new(SAMPLE_RATE, *cutoff_hz, *steep);
+                b.configure(*cutoff_hz, *steep);
             }
             (
                 NodeProc::Gate { gate, vad_gate },
@@ -990,13 +990,13 @@ impl NodeProc {
                 l.configure(*ceiling_db, *lookahead_ms, *release_ms);
             }
             (NodeProc::Gain(g), NodeParams::Gain { gain_db }) => {
-                *g = crate::dsp::db_to_lin(*gain_db);
+                g.set_db(*gain_db);
             }
             (NodeProc::Makeup(g), NodeParams::Makeup { gain_db }) => {
-                *g = crate::dsp::db_to_lin(*gain_db);
+                g.set_db(*gain_db);
             }
             (NodeProc::Mix(g), NodeParams::Mix { gain_db }) => {
-                *g = crate::dsp::db_to_lin(*gain_db);
+                g.set_db(*gain_db);
             }
             _ => {}
         }
@@ -1093,7 +1093,7 @@ impl NodeProc {
                 // For Mix, `input` is the executor's sum of the node's inputs;
                 // `g` is the output trim.
                 for (o, &x) in output.iter_mut().zip(input) {
-                    *o = x * *g;
+                    *o = g.process(x);
                 }
             }
         }

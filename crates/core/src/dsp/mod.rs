@@ -21,6 +21,8 @@ pub mod pitch_detect;
 pub mod psola;
 pub mod reverb;
 pub mod saturator;
+pub mod smooth;
+pub mod svf;
 
 pub use autotune::{Autotune, Scale};
 pub use biquad::{Biquad, HighPass};
@@ -40,6 +42,7 @@ pub use pitch_detect::PitchDetector;
 pub use psola::Psola;
 pub use reverb::Reverb;
 pub use saturator::Saturator;
+pub use smooth::{Smoothed, SmoothedGain};
 
 /// One-pole smoothing coefficient for a time constant in milliseconds. Shared by
 /// the gate, compressor, and de-esser envelope followers.

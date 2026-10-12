@@ -1,5 +1,6 @@
 //! Transposed Direct-Form II biquad filter (RBJ cookbook coefficients).
 
+use crate::dsp::smooth::{Smoothed, StepClock, FILTER_STEP, GLIDE_MS};
 use crate::types::Sample;
 
 /// A second-order IIR filter section. Cheap, stable, and the building block for
@@ -108,6 +109,17 @@ impl Biquad {
         y
     }
 
+    /// Take `other`'s coefficients but keep this filter's state, so a
+    /// parameter change continues the waveform instead of restarting it.
+    #[inline]
+    pub fn retune(&mut self, other: &Biquad) {
+        self.b0 = other.b0;
+        self.b1 = other.b1;
+        self.b2 = other.b2;
+        self.a1 = other.a1;
+        self.a2 = other.a2;
+    }
+
     /// Clear the filter state (e.g. on stream restart).
     pub fn reset(&mut self) {
         self.z1 = 0.0;
@@ -126,28 +138,66 @@ const BUTTERWORTH_4TH: [f32; 2] = [0.541_196_1, 1.306_562_9];
 /// properly without having to push the cutoff up into the voice.
 #[derive(Debug, Clone)]
 pub struct HighPass {
+    sample_rate: u32,
     first: Biquad,
     second: Option<Biquad>,
+    /// Cutoff, gliding in log2(Hz) so a sweep moves evenly through octaves.
+    cutoff: Smoothed,
+    clock: StepClock,
 }
 
 impl HighPass {
     /// Build at `cutoff_hz`. `steep` selects 24 dB/octave over 12.
     pub fn new(sample_rate: u32, cutoff_hz: f32, steep: bool) -> Self {
-        if steep {
-            Self {
-                first: Biquad::highpass(sample_rate, cutoff_hz, BUTTERWORTH_4TH[0]),
-                second: Some(Biquad::highpass(sample_rate, cutoff_hz, BUTTERWORTH_4TH[1])),
+        let cutoff_hz = cutoff_hz.clamp(10.0, sample_rate as f32 * 0.45);
+        let mut hp = Self {
+            sample_rate,
+            first: Biquad::highpass(sample_rate, cutoff_hz, std::f32::consts::FRAC_1_SQRT_2),
+            second: None,
+            cutoff: Smoothed::new(cutoff_hz.log2(), sample_rate, GLIDE_MS),
+            clock: StepClock::default(),
+        };
+        hp.set_steep(steep);
+        hp.retune(cutoff_hz);
+        hp
+    }
+
+    /// Change the cutoff and slope without resetting the filter. The cutoff
+    /// glides to its new value.
+    pub fn configure(&mut self, cutoff_hz: f32, steep: bool) {
+        let cutoff_hz = cutoff_hz.clamp(10.0, self.sample_rate as f32 * 0.45);
+        self.cutoff.set(cutoff_hz.log2());
+        if steep != self.second.is_some() {
+            self.set_steep(steep);
+            self.retune(self.cutoff.current().exp2());
+        }
+    }
+
+    fn set_steep(&mut self, steep: bool) {
+        self.second = steep.then(|| Biquad::highpass(self.sample_rate, 1000.0, BUTTERWORTH_4TH[1]));
+    }
+
+    /// Recompute coefficients for `cutoff_hz`, keeping filter state.
+    fn retune(&mut self, cutoff_hz: f32) {
+        match &mut self.second {
+            Some(s) => {
+                self.first.retune(&Biquad::highpass(self.sample_rate, cutoff_hz, BUTTERWORTH_4TH[0]));
+                s.retune(&Biquad::highpass(self.sample_rate, cutoff_hz, BUTTERWORTH_4TH[1]));
             }
-        } else {
-            Self {
-                first: Biquad::highpass(sample_rate, cutoff_hz, std::f32::consts::FRAC_1_SQRT_2),
-                second: None,
-            }
+            None => self.first.retune(&Biquad::highpass(
+                self.sample_rate,
+                cutoff_hz,
+                std::f32::consts::FRAC_1_SQRT_2,
+            )),
         }
     }
 
     #[inline]
     pub fn process(&mut self, x: Sample) -> Sample {
+        if self.clock.tick() && !self.cutoff.settled() {
+            let hz = self.cutoff.advance(FILTER_STEP).exp2();
+            self.retune(hz);
+        }
         let y = self.first.process(x);
         match &mut self.second {
             Some(s) => s.process(y),
@@ -162,7 +212,6 @@ impl HighPass {
         }
     }
 }
-
 /// Shared RBJ intermediate terms: `(sin w0, cos w0, alpha)`.
 fn rbj_terms(sample_rate: u32, freq_hz: f32, q: f32) -> (f32, f32, f32) {
     let w0 = std::f32::consts::TAU * freq_hz / sample_rate as f32;
