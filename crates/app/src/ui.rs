@@ -167,7 +167,9 @@ impl FormantApp {
     /// the `Vst3` nodes in the graph. Instantiation (slow) happens here on the UI
     /// thread; the live instance is handed to the audio thread via the engine.
     fn reconcile_vsts(&mut self) {
-        let want: Vec<(NodeId, String, Vec<(u32, f64)>)> = self
+        /// A Vst3 node to keep loaded: its id, binary path, and stored params.
+        type VstWant = (NodeId, String, Vec<(u32, f64)>);
+        let want: Vec<VstWant> = self
             .graph
             .nodes
             .iter()
@@ -565,7 +567,7 @@ impl eframe::App for FormantApp {
         // Recover from a lost audio device (unplug, disable, default change) by
         // restarting the engine, throttled so a truly-gone device doesn't loop.
         if self.engine.device_lost() {
-            let due = self.last_recovery.map_or(true, |t| t.elapsed().as_secs_f32() > 3.0);
+            let due = self.last_recovery.is_none_or(|t| t.elapsed().as_secs_f32() > 3.0);
             if due {
                 crate::logging::line("audio device lost; restarting the engine to recover");
                 self.restart_engine();

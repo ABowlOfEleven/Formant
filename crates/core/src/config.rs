@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Windows endpoint names changing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)] // tolerate fields added in newer versions
+#[derive(Default)]
 pub struct DeviceConfig {
     /// Microphone to capture (substring match).
     pub mic: String,
@@ -17,13 +18,6 @@ pub struct DeviceConfig {
     pub outputs: Vec<String>,
 }
 
-impl Default for DeviceConfig {
-    fn default() -> Self {
-        // Empty means "use the system default". On first run the app fills these
-        // in with the machine's actual default mic and playback device.
-        Self { mic: String::new(), outputs: Vec::new() }
-    }
-}
 
 /// Hotkey bindings as virtual-key codes. `None` means the action is unbound
 /// (the user cleared it); the listener simply ignores unbound actions.

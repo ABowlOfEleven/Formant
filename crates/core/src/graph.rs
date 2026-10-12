@@ -1160,7 +1160,7 @@ impl NodeProc {
             NodeParams::HighPass { cutoff_hz, steep, slope_db } => {
                 NodeProc::HighPass(HighPass::new(SAMPLE_RATE, cutoff_hz, hpf_slope(steep, slope_db)))
             }
-            NodeParams::Denoise => NodeProc::Denoise(Box::new(Denoise::new())),
+            NodeParams::Denoise => NodeProc::Denoise(Box::default()),
             NodeParams::Gate {
                 threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms,
                 mode, ratio, hysteresis_db, sc_hpf_hz, sc_lpf_hz,
@@ -1548,8 +1548,8 @@ impl GraphProcessor {
                         self.a[..n].copy_from_slice(&self.node_bufs[&ups[0]][..n]);
                         for u in &ups[1..] {
                             let src = &self.node_bufs[u];
-                            for i in 0..n {
-                                self.a[i] += src[i];
+                            for (a, s) in self.a[..n].iter_mut().zip(&src[..n]) {
+                                *a += s;
                             }
                         }
                     }

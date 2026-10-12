@@ -37,7 +37,7 @@ impl Denoise {
     pub fn new() -> Self {
         let mut out_buf = VecDeque::with_capacity(FRAME * 4);
         // Prime one frame of latency so output never starves input.
-        out_buf.extend(std::iter::repeat(0.0).take(FRAME));
+        out_buf.extend(std::iter::repeat_n(0.0, FRAME));
         Self {
             state: DenoiseState::new(),
             in_buf: VecDeque::with_capacity(FRAME * 4),

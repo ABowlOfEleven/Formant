@@ -30,7 +30,7 @@ use windows::Win32::Media::Audio::{
 use windows::Win32::System::Com::{CoTaskMemFree, CLSCTX_ALL};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
-use formant_core::backend::AudioBackend;
+use formant_core::backend::{AudioBackend, ProcessFn};
 use formant_core::types::Sample;
 use formant_core::DriftResampler;
 
@@ -93,7 +93,7 @@ unsafe fn open_shared(device: &IMMDevice) -> Result<Stream> {
 /// Capture loop: mic → mono → DSP callback → every output ring.
 fn run_capture(
     id: String,
-    mut process: Box<dyn FnMut(&[Sample], &mut [Sample]) + Send>,
+    mut process: ProcessFn,
     mut producers: Vec<Producer<Sample>>,
     running: Arc<AtomicBool>,
     stats: Arc<Stats>,
@@ -280,7 +280,7 @@ impl WasapiBackend {
 impl AudioBackend for WasapiBackend {
     fn start(
         &mut self,
-        callback: Box<dyn FnMut(&[Sample], &mut [Sample]) + Send>,
+        callback: ProcessFn,
     ) -> Result<()> {
         if self.render_ids.is_empty() {
             anyhow::bail!("WasapiBackend needs at least one render output");
