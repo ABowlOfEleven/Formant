@@ -1298,7 +1298,7 @@ impl FormantApp {
                     ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
                         .on_hover_text("Blend between your dry voice (0) and the shifted voice (1). Use less than 1 to layer a harmony under your voice.");
                 }
-                NodeParams::Autotune { key, scale, strength, speed_ms, ref_a } => {
+                NodeParams::Autotune { key, scale, strength, speed_ms, humanize, ref_a } => {
                     use formant_core::dsp::autotune::NOTE_NAMES;
                     ui.horizontal(|ui| {
                         ui.label("key");
@@ -1321,6 +1321,8 @@ impl FormantApp {
                         .on_hover_text("How hard notes are pulled to the scale. 1.0 is a full snap (the hard robotic sound); lower is gentle correction.");
                     ui.add(egui::Slider::new(speed_ms, 1.0..=300.0).logarithmic(true).text("speed ms"))
                         .on_hover_text("How fast the pitch glides to the target. Fast (a few ms) is the classic autotune effect; slow (100+ ms) sounds natural.");
+                    ui.add(egui::Slider::new(humanize, 0.0..=1.0).text("humanize"))
+                        .on_hover_text("Relaxes the correction on long held notes so they keep their natural drift and vibrato, while short notes still snap. Raise it for a natural vocal, leave it at 0 for the hard effect.");
                     ui.add(egui::Slider::new(ref_a, 430.0..=450.0).text("reference A"))
                         .on_hover_text("Tuning reference for A4 (default 440 Hz).");
                     ui.label(RichText::new("formants preserved automatically").color(theme::MUTED).small())

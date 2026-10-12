@@ -3,6 +3,38 @@
 This file records all notable changes to Formant. The format follows Keep a
 Changelog. The project uses semantic versioning.
 
+## [Unreleased]
+
+A rebuild of the autotune node. Existing presets load and sound as before,
+except that the correction is now more accurate.
+
+### Added
+
+- A Humanize control on the autotune node. On notes held longer than about a
+  tenth of a second, the correction relaxes, so long notes keep their natural
+  drift and vibrato. Short notes still snap to pitch. Older presets load with
+  Humanize at 0, which is the old behavior.
+- A test bench for the autotune node (`cargo run --release -p formant-core
+  --example autotune_lab`). It makes test vocals, measures pitch accuracy,
+  warble, wrong notes, clicks and roughness, and writes WAV files to listen to.
+
+### Changed
+
+- The target note no longer flips between two notes when you sing near the
+  midpoint between them. The note decision now follows your pitch without
+  vibrato and switches only when the new note is clearly closer. Before this
+  change, a note with vibrato across the midpoint went to the wrong note 43% of
+  the time on the test bench. Now it is 0%.
+- The pitch detector now reports every 1.3 ms instead of every 8 ms. It works
+  on fractions of a sample, so the corrected note lands on pitch instead of up
+  to 8 cents away. It reads voices up to 1100 Hz (was 550 Hz), so high voices
+  are corrected to the correct note.
+- Pitch information now lines up with the audio that is shifted. Before, the
+  shift used a pitch reading from about 25 ms later, which smeared note
+  changes.
+- Grains are placed at their exact fractional positions, and pulse alignment no
+  longer jumps between two peaks. Held notes sound smoother.
+- The autotune node uses about 14 times less CPU.
 ## [0.4.0]
 
 A quality pass over the whole signal chain. Existing presets and sessions

@@ -58,7 +58,31 @@ impl Scale {
 pub const NOTE_NAMES: [&str; 12] =
     ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
+/// How long the note decision smooths over. Long enough to average out
+/// vibrato (5-7 Hz), short enough that a deliberate move to a new note lands
+/// within a few tens of milliseconds.
+const NOTE_SMOOTH_S: f32 = 0.06;
+/// How much closer the smoothed pitch must be to a new note than to the current
+/// one before the target switches, in semitones.
+const NOTE_HYSTERESIS: f32 = 0.2;
+/// A jump this far from the current note (semitones) switches immediately,
+/// without waiting for the smoothed pitch. Covers fast melodic leaps.
+const NOTE_LEAP: f32 = 0.85;
+/// Humanize: a note held longer than this starts to relax its retune speed...
+const HUMANIZE_ONSET_S: f32 = 0.12;
+/// ...reaching the full relaxed speed this much later...
+const HUMANIZE_RAMP_S: f32 = 0.25;
+/// ...which adds up to this many milliseconds of retune time at humanize 1.0.
+const HUMANIZE_MAX_MS: f32 = 350.0;
+
 /// Streaming autotune.
+///
+/// The detector looks at the newest input, but [`Psola`] works on audio from
+/// tens of milliseconds ago (its latency). Applying a fresh pitch reading to
+/// old audio corrects every note change with the wrong period for the length of
+/// that gap, which smears onsets and transitions. So the control signal
+/// (period and correction) goes through a delay line sized to the difference,
+/// and every grain is shifted with the pitch that was measured on that grain.
 pub struct Autotune {
     detector: PitchDetector,
     psola: Psola,
@@ -66,10 +90,27 @@ pub struct Autotune {
     key: u8,
     mask: u16,
     strength: f32,
-    speed_coef: f32,
+    speed_ms: f32,
+    humanize: f32,
     ref_a: f32,
-    cur_ratio: f32,
-    target_ratio: f32,
+
+    /// Note being corrected toward, as a MIDI number.
+    note: Option<i32>,
+    /// Vibrato-free pitch used for the note decision, in MIDI.
+    slow_midi: f32,
+    slow_coef: f32,
+    /// Samples since `note` was chosen, for humanize.
+    note_age: usize,
+    /// Correction being applied (smoothed) and aimed for, in cents.
+    corr_cents: f32,
+    target_cents: f32,
+    /// Per-sample glide coefficient toward `target_cents`.
+    glide_coef: f32,
+    period: f32,
+
+    /// Control delay line: (period, ratio) per sample.
+    ctl: Vec<(f32, f32)>,
+    ctl_pos: usize,
 }
 
 impl Autotune {
@@ -81,17 +122,31 @@ impl Autotune {
         speed_ms: f32,
         ref_a: f32,
     ) -> Self {
+        let detector = PitchDetector::new(sample_rate);
+        let psola = Psola::new(sample_rate);
+        let delay = psola.latency_samples().saturating_sub(detector.analysis_delay()).max(1);
+        let sr = sample_rate as f32;
+        let hop = 64.0; // detector reporting interval, close enough for a smoother
         let mut a = Self {
-            detector: PitchDetector::new(sample_rate),
-            psola: Psola::new(sample_rate),
-            sample_rate: sample_rate as f32,
+            detector,
+            psola,
+            sample_rate: sr,
             key: 0,
             mask: 0,
             strength: 0.0,
-            speed_coef: 0.0,
+            speed_ms: 40.0,
+            humanize: 0.0,
             ref_a: 440.0,
-            cur_ratio: 1.0,
-            target_ratio: 1.0,
+            note: None,
+            slow_midi: 0.0,
+            slow_coef: 1.0 - (-hop / (NOTE_SMOOTH_S * sr)).exp(),
+            note_age: 0,
+            corr_cents: 0.0,
+            target_cents: 0.0,
+            glide_coef: 1.0,
+            period: sr / 150.0,
+            ctl: vec![(sr / 150.0, 1.0); delay],
+            ctl_pos: 0,
         };
         a.configure(key, scale, strength, speed_ms, ref_a);
         a
@@ -108,10 +163,26 @@ impl Autotune {
         self.key = key % 12;
         self.mask = scale.mask();
         self.strength = strength.clamp(0.0, 1.0);
-        // Per-sample one-pole coefficient for the retune glide.
-        let ms = speed_ms.max(0.5);
-        self.speed_coef = 1.0 - (-1.0 / (ms * 0.001 * self.sample_rate)).exp();
+        self.speed_ms = speed_ms.max(0.5);
         self.ref_a = ref_a.clamp(400.0, 480.0);
+        self.update_glide();
+    }
+
+    /// Humanize, `0..=1`. Short notes always use the retune speed; on notes
+    /// held longer than about a tenth of a second the retune relaxes, so a
+    /// sustained note keeps its natural drift and vibrato while quick notes
+    /// still snap. Hard, instant correction of long notes is the single
+    /// biggest giveaway of an over-tuned vocal.
+    pub fn set_humanize(&mut self, humanize: f32) {
+        self.humanize = humanize.clamp(0.0, 1.0);
+        self.update_glide();
+    }
+
+    fn update_glide(&mut self) {
+        let held = self.note_age as f32 / self.sample_rate - HUMANIZE_ONSET_S;
+        let relax = (held / HUMANIZE_RAMP_S).clamp(0.0, 1.0);
+        let ms = self.speed_ms + self.humanize * relax * HUMANIZE_MAX_MS;
+        self.glide_coef = 1.0 - (-1.0 / (ms * 0.001 * self.sample_rate)).exp();
     }
 
     /// Algorithmic latency in samples.
@@ -122,31 +193,82 @@ impl Autotune {
     #[inline]
     pub fn process(&mut self, x: Sample) -> Sample {
         if let Some(est) = self.detector.push(x) {
-            self.target_ratio = if est.voiced && est.hz > 0.0 {
-                // Track the period so grains stay pitch-synchronous.
-                let period = (self.sample_rate / est.hz).round() as usize;
-                self.psola.set_period(period);
-
-                let midi = 69.0 + 12.0 * (est.hz / self.ref_a).log2();
-                let snapped = snap(midi, self.key, self.mask);
-                let target_hz = self.ref_a * 2f32.powf((snapped - 69.0) / 12.0);
-                let full = (target_hz / est.hz).clamp(0.5, 2.0);
-                1.0 + self.strength * (full - 1.0)
-            } else {
-                // Unvoiced: glide back to no correction. At a ratio of exactly
-                // 1.0 PSOLA reconstructs the input, so consonants and breaths
-                // pass through the node untouched.
-                1.0
-            };
+            self.on_estimate(est.voiced && est.hz > 0.0, est.hz);
         }
-        self.cur_ratio += (self.target_ratio - self.cur_ratio) * self.speed_coef;
-        self.psola.set_ratio(self.cur_ratio);
+        self.note_age += 1;
+        self.corr_cents += (self.target_cents - self.corr_cents) * self.glide_coef;
+        let ratio = (self.corr_cents * (std::f32::consts::LN_2 / 1200.0)).exp();
+
+        // Push the control for "now" and apply the one for the audio PSOLA is
+        // actually working on.
+        let slot = &mut self.ctl[self.ctl_pos];
+        let (period, applied) = *slot;
+        *slot = (self.period, ratio);
+        self.ctl_pos = (self.ctl_pos + 1) % self.ctl.len();
+
+        self.psola.set_period(period);
+        self.psola.set_ratio(applied);
         self.psola.process(x)
+    }
+
+    fn on_estimate(&mut self, voiced: bool, hz: f32) {
+        if !voiced {
+            // Unvoiced: glide back to no correction. At a ratio of exactly 1.0
+            // PSOLA reconstructs the input, so consonants and breaths pass
+            // through untouched.
+            self.note = None;
+            self.target_cents = 0.0;
+            return;
+        }
+        self.period = self.sample_rate / hz;
+        let midi = 69.0 + 12.0 * (hz / self.ref_a).log2();
+        if self.note.is_none() {
+            self.slow_midi = midi;
+        } else {
+            self.slow_midi += (midi - self.slow_midi) * self.slow_coef;
+        }
+
+        let chosen = self.choose_note(midi);
+        if self.note != Some(chosen) {
+            self.note = Some(chosen);
+            self.note_age = 0;
+        }
+        self.update_glide();
+        let full = ((chosen as f32 - midi) * 100.0).clamp(-1200.0, 1200.0);
+        self.target_cents = self.strength * full;
+    }
+
+    /// Pick the target note with hysteresis.
+    ///
+    /// Snapping the instantaneous pitch to the nearest note makes a singer who
+    /// hovers near the midpoint between two notes (or whose vibrato crosses it)
+    /// flip the target back and forth several times a second. That warble is
+    /// the classic cheap-autotune artifact. Instead the decision follows a
+    /// vibrato-free smoothed pitch, and switches only when that is clearly
+    /// closer to the new note. A real leap still switches at once.
+    fn choose_note(&self, midi: f32) -> i32 {
+        let Some(cur) = self.note else {
+            return snap(self.slow_midi, self.key, self.mask) as i32;
+        };
+        let leap_to = snap(midi, self.key, self.mask) as i32;
+        if leap_to != cur && (midi - cur as f32).abs() > NOTE_LEAP {
+            return leap_to;
+        }
+        let near = snap(self.slow_midi, self.key, self.mask) as i32;
+        if near != cur {
+            let d_cur = (self.slow_midi - cur as f32).abs();
+            let d_new = (self.slow_midi - near as f32).abs();
+            if d_cur - d_new > NOTE_HYSTERESIS {
+                return near;
+            }
+        }
+        cur
     }
 
     #[cfg(test)]
     pub fn debug_ratios(&self) -> (f32, f32) {
-        (self.cur_ratio, self.target_ratio)
+        let r = |c: f32| (c * (std::f32::consts::LN_2 / 1200.0)).exp();
+        (r(self.corr_cents), r(self.target_cents))
     }
 }
 
@@ -254,6 +376,57 @@ mod tests {
         assert!(tail.iter().all(|v| v.is_finite()));
     }
 
+    /// A singer hovering near the midpoint between two notes, with vibrato
+    /// crossing it, must stay on one target instead of flipping between them.
+    #[test]
+    fn hysteresis_holds_the_note_through_vibrato_at_a_midpoint() {
+        let mut at = Autotune::new(SR, 0, Scale::Chromatic, 1.0, 10.0, 440.0);
+        let center = 64.45f32; // E4, 45 cents sharp: F is 55 cents away
+        let mut phase = 0.0f32;
+        let mut notes = Vec::new();
+        for i in 0..SR as usize * 2 {
+            let t = i as f32 / SR as f32;
+            let midi = center + 0.25 * (TAU * 5.5 * t).sin();
+            phase += 440.0 * 2f32.powf((midi - 69.0) / 12.0) / SR as f32;
+            let x = 0.35 * (1..=20).map(|h| (TAU * phase * h as f32).sin() / h as f32).sum::<f32>();
+            at.process(x);
+            if i > SR as usize / 4 {
+                notes.push(at.note);
+            }
+        }
+        let flips = notes.windows(2).filter(|w| w[0] != w[1]).count();
+        assert_eq!(flips, 0, "target note flipped {flips} times");
+        assert_eq!(notes.last().copied().flatten(), Some(64), "should hold E4");
+    }
+
+    /// Humanize relaxes the retune on a held note, so more of the singer's
+    /// own pitch movement survives than with hard correction.
+    #[test]
+    fn humanize_lets_held_notes_breathe() {
+        let wobble = |humanize: f32| {
+            let mut at = Autotune::new(SR, 0, Scale::Major, 1.0, 5.0, 440.0);
+            at.set_humanize(humanize);
+            let mut phase = 0.0f32;
+            let mut ratios = Vec::new();
+            for i in 0..SR as usize * 2 {
+                let t = i as f32 / SR as f32;
+                let hz = 440.0 * 2f32.powf(0.3 / 12.0 * (TAU * 5.0 * t).sin());
+                phase += hz / SR as f32;
+                let x = 0.35 * (1..=20).map(|h| (TAU * phase * h as f32).sin() / h as f32).sum::<f32>();
+                at.process(x);
+                if i > SR as usize {
+                    ratios.push(at.debug_ratios().0);
+                }
+            }
+            // The correction itself moves to cancel vibrato; the less it moves,
+            // the more vibrato is left in the output.
+            let mean = ratios.iter().sum::<f32>() / ratios.len() as f32;
+            (ratios.iter().map(|r| (r - mean).powi(2)).sum::<f32>() / ratios.len() as f32).sqrt()
+        };
+        let hard = wobble(0.0);
+        let human = wobble(1.0);
+        assert!(human < hard * 0.5, "humanize should cancel far less vibrato: {human} vs {hard}");
+    }
     #[test]
     fn scale_masks_have_expected_note_counts() {
         assert_eq!(Scale::Chromatic.mask().count_ones(), 12);

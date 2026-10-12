@@ -17,6 +17,12 @@
 //! by the analysis period, so consecutive grains stay phase-coherent with each
 //! other even without explicit glottal-epoch detection.
 //!
+//! Periods, grid marks and grain positions are all fractional. Grains are read
+//! with cubic interpolation and laid down relative to their exact center, so a
+//! period of 109.76 samples is honored as 109.76 and not rounded to 110. Rounding
+//! anywhere in this chain shows up as pitch error and as grain-to-grain timing
+//! jitter, which the ear hears as roughness.
+//!
 //! Overlap-add is normalized by the accumulated window sum, so a changing period
 //! or ratio can never modulate the level.
 
@@ -24,6 +30,12 @@ use crate::types::Sample;
 
 /// Lowest pitch handled. Sets the longest grain, and with it the latency.
 pub const MIN_HZ: f32 = 75.0;
+
+/// Periods shorter than this (in seconds, so above about 500 Hz) are not snapped
+/// to glottal pulses. The energy window shrinks with the period, and at these
+/// sizes it locks onto formant ringing instead of the pulse, which makes the
+/// marks jitter. The plain analysis grid is smoother up there.
+const MIN_SNAP_PERIOD_S: f32 = 0.002;
 
 /// Ratio limits. Also bounds the grain-placement loop.
 const MIN_RATIO: f32 = 0.5;
@@ -33,6 +45,8 @@ const MAX_RATIO: f32 = 2.0;
 pub struct Psola {
     /// Longest supported pitch period, in samples.
     max_period: usize,
+    /// Shortest period that still gets epoch snapping, in samples.
+    min_snap_period: f32,
     /// Longest grain half-width. Bounded so the latency below always covers a
     /// full grain plus the distance a mark can be snapped.
     max_half: usize,
@@ -55,7 +69,7 @@ pub struct Psola {
     /// the pitch-synchronous grid.
     last_analysis: f64,
 
-    period: usize,
+    period: f32,
     ratio: f32,
     /// Undoes the residual level tilt left by window-sum normalization (see
     /// [`Psola::set_ratio`]).
@@ -79,6 +93,7 @@ impl Psola {
         let size = (4 * max_period + 64).next_power_of_two();
         Self {
             max_period,
+            min_snap_period: MIN_SNAP_PERIOD_S * sample_rate as f32,
             max_half,
             latency,
             mask: size - 1,
@@ -88,7 +103,7 @@ impl Psola {
             written: 0,
             next_synth: 0.0,
             last_analysis: 0.0,
-            period: (sample_rate as f32 / 150.0) as usize, // neutral until told
+            period: sample_rate as f32 / 150.0, // neutral until told
             ratio: 1.0,
             level_comp: 1.0,
         }
@@ -99,10 +114,12 @@ impl Psola {
         self.latency
     }
 
-    /// Set the detected pitch period in samples. Clamped to the supported range.
+    /// Set the detected pitch period in samples (fractional). Clamped to the
+    /// supported range.
     #[inline]
-    pub fn set_period(&mut self, period: usize) {
-        self.period = period.clamp(16, self.max_period);
+    pub fn set_period(&mut self, period: f32) {
+        let p = if period.is_finite() { period } else { 150.0 };
+        self.period = p.clamp(16.0, self.max_period as f32);
     }
 
     /// Set the pitch ratio (output pitch / input pitch). `1.0` reconstructs the
@@ -143,11 +160,11 @@ impl Psola {
         // would stop reaching each other and the window envelope would show
         // through as ripple. Widening them by the same factor restores the
         // overlap. Shifting up already overlaps more than enough.
-        let half = ((self.period as f32 / self.ratio.min(1.0)).round() as usize).min(self.max_half);
+        let half = (self.period / self.ratio.min(1.0)).min(self.max_half as f32);
 
         // Place every grain that can still reach this output sample: anything
         // centered up to `out_pos + half` may still write here.
-        let horizon = (out_pos + half) as f64;
+        let horizon = out_pos as f64 + half as f64;
         while self.next_synth <= horizon {
             // Snap to the nearest mark on the analysis grid. With the grid
             // spaced by the analysis period but synthesis marks spaced by
@@ -161,10 +178,10 @@ impl Psola {
             // at an arbitrary phase partially cancel instead. Skipped when we
             // aren't really shifting, because there the untouched grid already
             // reconstructs the input exactly and moving marks would spoil it.
-            if steps != 0.0 && (self.ratio - 1.0).abs() > 0.01 {
+            if steps != 0.0 && (self.ratio - 1.0).abs() > 0.01 && self.period >= self.min_snap_period {
                 analysis = self.snap_to_epoch(analysis);
             }
-            self.place_grain(analysis, self.next_synth, half as i64);
+            self.place_grain(analysis, self.next_synth, half);
             self.last_analysis = analysis;
             self.next_synth += p / self.ratio as f64;
         }
@@ -178,64 +195,109 @@ impl Psola {
         y
     }
 
-    /// Search near `predicted` for the local energy peak - the glottal closure
-    /// instant, in a real voice - and return that position instead.
+    /// Search near `predicted` for the local energy peak (the glottal closure
+    /// instant, in a real voice) and return that position instead.
+    ///
+    /// Two things keep consecutive marks from jittering. Candidates are scored
+    /// with a penalty for straying from the prediction, so when a period holds
+    /// two peaks of similar size the mark does not hop between them from grain
+    /// to grain. And the winner is refined to a fractional position by fitting a
+    /// parabola through its neighbors, so the mark moves smoothly as the pitch
+    /// drifts instead of in whole-sample steps.
     fn snap_to_epoch(&self, predicted: f64) -> f64 {
-        let p = self.period as i64;
-        let search = (p / 4).max(1);
-        let win = (p / 8).max(1);
+        let p = self.period;
+        let search = ((p / 4.0) as i64).max(1);
+        let win = ((p / 8.0) as i64).max(1);
         let center = predicted.round() as i64;
         let written = self.written as i64;
         let capacity = self.input.len() as i64;
+        let usable = |c: i64| c - win > 0 && c + win + 1 < written && written - (c - win - 1) <= capacity;
+        let energy = |c: i64| -> f32 {
+            (-win..=win).map(|i| self.input[((c + i) as usize) & self.mask].powi(2)).sum()
+        };
 
-        let mut best = predicted;
-        let mut best_energy = -1.0f32;
-        for cand in (center - search)..=(center + search) {
-            if cand - win < 0 || cand + win >= written || written - (cand - win) > capacity {
-                continue;
-            }
-            let mut energy = 0.0;
-            for i in -win..=win {
-                let v = self.input[((cand + i) as usize) & self.mask];
-                energy += v * v;
-            }
-            if energy > best_energy {
-                best_energy = energy;
-                best = cand as f64;
+        let mut scores = [0.0f32; 128];
+        let span = (2 * search + 1).min(scores.len() as i64);
+        let first = center - span / 2;
+        let mut peak = 0.0f32;
+        for k in 0..span {
+            let c = first + k;
+            let e = if usable(c) { energy(c) } else { 0.0 };
+            scores[k as usize] = e;
+            peak = peak.max(e);
+        }
+        if peak <= 0.0 {
+            return predicted;
+        }
+        // Penalize distance from the prediction: up to 30% of the peak energy
+        // at the edge of the search range.
+        let mut best = 0usize;
+        let mut best_score = f32::MIN;
+        for (k, &e) in scores.iter().enumerate().take(span as usize) {
+            let off = (first + k as i64) as f64 - predicted;
+            let s = e / peak - 0.3 * (off / search as f64).powi(2) as f32;
+            if s > best_score {
+                best_score = s;
+                best = k;
             }
         }
-        best
+        let mut pos = (first + best as i64) as f64;
+        if best > 0 && best + 1 < span as usize {
+            pos += parabolic(scores[best - 1], scores[best], scores[best + 1]) as f64;
+        }
+        pos
+    }
+
+    /// Cubic (Catmull-Rom) read of the input at a fractional position. The
+    /// caller guarantees the four taps are still held.
+    #[inline]
+    fn read(&self, pos: f64) -> f32 {
+        let i = pos.floor() as i64;
+        let t = (pos - i as f64) as f32;
+        let at = |k: i64| self.input[(k as usize) & self.mask];
+        let (y0, y1, y2, y3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+        let a = -0.5 * y0 + 1.5 * y1 - 1.5 * y2 + 0.5 * y3;
+        let b = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+        let c = -0.5 * y0 + 0.5 * y2;
+        ((a * t + b) * t + c) * t + y1
     }
 
     /// Window `half` samples either side of `analysis` and overlap-add the
-    /// result at `synth`.
-    fn place_grain(&mut self, analysis: f64, synth: f64, p: i64) {
-        let a0 = analysis.round() as i64;
-        let s0 = synth.round() as i64;
+    /// result centered exactly on `synth`. Both positions may be fractional:
+    /// every output sample inside the grain is read from the input at the same
+    /// fractional offset from the analysis mark.
+    fn place_grain(&mut self, analysis: f64, synth: f64, half: f32) {
+        let h = half as f64;
+        let first = (synth - h).ceil() as i64;
+        let last = (synth + h).floor() as i64;
         let written = self.written as i64;
         let capacity = self.input.len() as i64;
+        let inv = std::f64::consts::PI / h;
 
-        for i in -p..=p {
-            let src = a0 + i;
-            // Only read input we still hold.
-            if src < 0 || src >= written || written - src > capacity {
-                continue;
-            }
-            let dst = s0 + i;
-            if dst < 0 {
+        for dst in first.max(0)..=last {
+            let off = dst as f64 - synth;
+            let src = analysis + off;
+            let s0 = src.floor() as i64;
+            // Only read input we still hold, including the interpolation taps.
+            if s0 - 1 < 0 || s0 + 2 >= written || written - (s0 - 1) > capacity {
                 continue;
             }
             // Hann across the grain: zero at both ends, unity at the center.
-            let phase = std::f32::consts::PI * (i + p) as f32 / p as f32;
-            let w = 0.5 - 0.5 * phase.cos();
-
+            let w = (0.5 + 0.5 * (off * inv).cos()) as f32;
+            let x = self.read(src);
             let d = (dst as usize) & self.mask;
-            self.acc[d] += self.input[(src as usize) & self.mask] * w;
+            self.acc[d] += x * w;
             self.wsum[d] += w;
         }
     }
 }
 
+/// Offset of the vertex of the parabola through three equally spaced points.
+#[inline]
+fn parabolic(a: f32, b: f32, c: f32) -> f32 {
+    let denom = a + c - 2.0 * b;
+    if denom.abs() > 1e-12 { (0.5 * (a - c) / denom).clamp(-1.0, 1.0) } else { 0.0 }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,7 +324,7 @@ mod tests {
 
     fn run(input: &[f32], hz: f32, ratio: f32) -> Vec<f32> {
         let mut ps = Psola::new(SR);
-        ps.set_period((SR as f32 / hz) as usize);
+        ps.set_period(SR as f32 / hz);
         ps.set_ratio(ratio);
         input.iter().map(|&x| ps.process(x)).collect()
     }
@@ -378,7 +440,7 @@ mod tests {
     fn handles_silence_and_ratio_extremes_without_blowing_up() {
         let mut ps = Psola::new(SR);
         ps.set_ratio(99.0); // clamped
-        ps.set_period(0); // clamped
+        ps.set_period(0.0); // clamped
         for i in 0..10_000 {
             let y = ps.process(if i % 3 == 0 { 0.0 } else { 0.001 });
             assert!(y.is_finite(), "non-finite output at {i}");

@@ -225,6 +225,7 @@ impl NodeKind {
                 scale: Scale::Major,
                 strength: 0.9,
                 speed_ms: 40.0,
+                humanize: 0.3,
                 ref_a: 440.0,
             },
             NodeKind::Reverb => NodeParams::Reverb { room_size: 0.5, damping: 0.5, mix: 0.25 },
@@ -332,6 +333,11 @@ pub enum NodeParams {
         scale: Scale,
         strength: f32,
         speed_ms: f32,
+        /// Relaxes the retune on held notes so they keep their natural
+        /// movement. Missing from older presets, which load with it off so they
+        /// sound the same as before.
+        #[serde(default)]
+        humanize: f32,
         ref_a: f32,
     },
     Reverb { room_size: f32, damping: f32, mix: f32 },
@@ -811,15 +817,10 @@ impl NodeProc {
                     SAMPLE_RATE, 2048, 8, pitch_semitones, formant_semitones, mix, preserve_formants,
                 )))
             }
-            NodeParams::Autotune { key, scale, strength, speed_ms, ref_a } => {
-                NodeProc::Autotune(Box::new(Autotune::new(
-                    SAMPLE_RATE,
-                    key,
-                    scale,
-                    strength,
-                    speed_ms,
-                    ref_a,
-                )))
+            NodeParams::Autotune { key, scale, strength, speed_ms, humanize, ref_a } => {
+                let mut a = Autotune::new(SAMPLE_RATE, key, scale, strength, speed_ms, ref_a);
+                a.set_humanize(humanize);
+                NodeProc::Autotune(Box::new(a))
             }
             NodeParams::Reverb { room_size, damping, mix } => {
                 NodeProc::Reverb(Reverb::new(SAMPLE_RATE, room_size, damping, mix))
@@ -910,9 +911,10 @@ impl NodeProc {
             }
             (
                 NodeProc::Autotune(a),
-                NodeParams::Autotune { key, scale, strength, speed_ms, ref_a },
+                NodeParams::Autotune { key, scale, strength, speed_ms, humanize, ref_a },
             ) => {
                 a.configure(*key, *scale, *strength, *speed_ms, *ref_a);
+                a.set_humanize(*humanize);
             }
             (NodeProc::Reverb(r), NodeParams::Reverb { room_size, damping, mix }) => {
                 r.configure(*room_size, *damping, *mix);
@@ -1419,9 +1421,10 @@ mod tests {
         }
         match g.node(6).unwrap().params {
             // The dropped `preserve_formants` field must be ignored, not fatal.
-            NodeParams::Autotune { key, strength, .. } => {
+            NodeParams::Autotune { key, strength, humanize, .. } => {
                 assert_eq!(key, 2);
                 assert_eq!(strength, 0.8);
+                assert_eq!(humanize, 0.0, "older presets must keep their old behavior");
             }
             ref other => panic!("wrong node: {other:?}"),
         }
