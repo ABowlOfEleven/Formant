@@ -16,12 +16,12 @@ formant-vst3.workspace = true
 anyhow.workspace = true
 ctrlc.workspace = true
 eframe.workspace = true
-rfd = { version = "0.15", default-features = false }
+rfd = { version = "0.17", default-features = false }
 tray-icon = "0.19"
 realfft = "3"
 
 [target.'cfg(windows)'.dependencies]
-winreg = "0.52"
+winreg = "0.56"
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(windows)'.build-dependencies]
