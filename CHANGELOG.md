@@ -5,6 +5,12 @@ Changelog. The project uses semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Screen readers can now switch between the Mixer, Nodes and Setup pages.
+  The page tabs were reported as toggle buttons, so they could not be
+  selected as tabs. They are now tabs that are read as "selected" or not.
+
 ## [1.0.0]
 
 Formant 1.0. A rebuild of the autotune node, every built-in effect reworked

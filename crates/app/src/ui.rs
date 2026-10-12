@@ -1544,6 +1544,14 @@ impl FormantApp {
 fn tab_button(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(94.0, 30.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, format!("{label} tab")));
+    // egui has no tab widget type, so it reports a toggle button ("Mixer tab,
+    // off"). Re-role it as a tab with a selected state: screen readers then say
+    // "tab, selected", and selecting it (UIA SelectionItem) sends a click.
+    ui.ctx().accesskit_node_builder(resp.id, |node| {
+        node.set_role(egui::accesskit::Role::Tab);
+        node.clear_toggled();
+        node.set_selected(active);
+    });
     if resp.has_focus() {
         ui.painter().rect_stroke(
             rect.expand(2.0),
