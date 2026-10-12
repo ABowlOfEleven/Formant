@@ -338,9 +338,7 @@ mod tests {
     /// Every shipped preset has to be a working chain, not just valid data.
     #[test]
     fn factory_presets_process_audio_cleanly() {
-        use crate::dsp::compressor::{Character, Detector};
-use crate::dsp::deesser::{DeessDetection, DeessMode};
-use crate::graph::GraphProcessor;
+        use crate::graph::GraphProcessor;
         for preset in Preset::factory() {
             let mut proc = GraphProcessor::new(&preset.graph);
             let input: Vec<f32> = (0..4800)
@@ -368,9 +366,7 @@ use crate::graph::GraphProcessor;
     /// well past it.
     #[test]
     fn factory_presets_hold_their_ceiling_when_slammed() {
-        use crate::dsp::compressor::{Character, Detector};
-use crate::dsp::deesser::{DeessDetection, DeessMode};
-use crate::graph::GraphProcessor;
+        use crate::graph::GraphProcessor;
         for preset in Preset::factory() {
             let mut proc = GraphProcessor::new(&preset.graph);
             let input: Vec<f32> = (0..4800).map(|n| 0.99 * (n as f32 * 0.07).sin()).collect();
@@ -391,9 +387,7 @@ use crate::graph::GraphProcessor;
 
     #[test]
     fn vst_param_values_persist() {
-        use crate::dsp::compressor::{Character, Detector};
-use crate::dsp::deesser::{DeessDetection, DeessMode};
-use crate::graph::{Graph, NodeParams};
+        use crate::graph::{Graph, NodeParams};
         let mut g = Graph::default_chain();
         let id = g.add_node(
             NodeParams::Vst3 {

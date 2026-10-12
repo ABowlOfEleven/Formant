@@ -24,6 +24,7 @@ use crate::dsp::deesser::{DeEsserSettings, DeessDetection, DeessMode};
 use crate::dsp::eq::EqSettings;
 use crate::dsp::gate::GateMode;
 use crate::dsp::limiter::LimiterSettings;
+use crate::dsp::delay::DelaySettings;
 use crate::dsp::saturator::{SatKind, SaturatorSettings};
 use crate::engine::GateOverride;
 use crate::types::Sample;
@@ -389,7 +390,16 @@ impl NodeKind {
                 ref_a: 440.0,
             },
             NodeKind::Reverb => NodeParams::Reverb { room_size: 0.5, damping: 0.5, mix: 0.25 },
-            NodeKind::Delay => NodeParams::Delay { time_ms: 250.0, feedback: 0.3, mix: 0.3 },
+            NodeKind::Delay => NodeParams::Delay {
+                time_ms: 280.0,
+                feedback: 0.3,
+                mix: 0.25,
+                lowcut_hz: 150.0,
+                highcut_hz: 5000.0,
+                drive: 0.2,
+                wow: 0.1,
+                flutter: 0.05,
+            },
             NodeKind::Chorus => NodeParams::Chorus { depth_ms: 6.0, rate_hz: 1.2, mix: 0.4 },
             NodeKind::Limiter => NodeParams::Limiter {
                 ceiling_db: -1.0,
@@ -584,7 +594,23 @@ pub enum NodeParams {
         ref_a: f32,
     },
     Reverb { room_size: f32, damping: f32, mix: f32 },
-    Delay { time_ms: f32, feedback: f32, mix: f32 },
+    Delay {
+        time_ms: f32,
+        feedback: f32,
+        mix: f32,
+        /// Older presets were a clean digital echo: no filtering, saturation
+        /// or modulation in the repeats.
+        #[serde(default)]
+        lowcut_hz: f32,
+        #[serde(default = "default_tone_off")]
+        highcut_hz: f32,
+        #[serde(default)]
+        drive: f32,
+        #[serde(default)]
+        wow: f32,
+        #[serde(default)]
+        flutter: f32,
+    },
     Chorus { depth_ms: f32, rate_hz: f32, mix: f32 },
     Limiter {
         ceiling_db: f32,
@@ -1084,8 +1110,11 @@ impl NodeProc {
             NodeParams::Reverb { room_size, damping, mix } => {
                 NodeProc::Reverb(Reverb::new(SAMPLE_RATE, room_size, damping, mix))
             }
-            NodeParams::Delay { time_ms, feedback, mix } => {
-                NodeProc::Delay(Delay::new(SAMPLE_RATE, time_ms, feedback, mix))
+            NodeParams::Delay { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter } => {
+                NodeProc::Delay(Delay::new(
+                    SAMPLE_RATE,
+                    DelaySettings { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter },
+                ))
             }
             NodeParams::Chorus { depth_ms, rate_hz, mix } => {
                 NodeProc::Chorus(Chorus::new(SAMPLE_RATE, depth_ms, rate_hz, mix))
@@ -1175,8 +1204,8 @@ impl NodeProc {
             (NodeProc::Reverb(r), NodeParams::Reverb { room_size, damping, mix }) => {
                 r.configure(*room_size, *damping, *mix);
             }
-            (NodeProc::Delay(d), NodeParams::Delay { time_ms, feedback, mix }) => {
-                d.configure(*time_ms, *feedback, *mix);
+            (NodeProc::Delay(d), &NodeParams::Delay { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter }) => {
+                d.configure(DelaySettings { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter });
             }
             (NodeProc::Chorus(c), NodeParams::Chorus { depth_ms, rate_hz, mix }) => {
                 c.configure(*depth_ms, *rate_hz, *mix);

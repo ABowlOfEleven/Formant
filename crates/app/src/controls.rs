@@ -234,10 +234,17 @@ pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
             knob(damping, "damping", (0.0, 1.0), "", 2, "How quickly the highs fade in the tail."),
             knob(mix, "mix", (0.0, 1.0), "", 2, "Blend of dry and reverberant sound."),
         ],
-        P::Delay { time_ms, feedback, mix } => vec![
-            log_knob(time_ms, "time", (20.0, 2000.0), "ms", 0, "Echo spacing."),
-            knob(feedback, "feedback", (0.0, 0.95), "", 2, "How much each echo feeds the next. Higher is more repeats."),
+        P::Delay { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter } => vec![
+            log_knob(time_ms, "time", (20.0, 2000.0), "ms", 0, "Echo spacing. Changing it slides the pitch like a tape echo."),
+            knob(feedback, "feedback", (0.0, 1.05), "", 2, "How much each echo feeds the next. Above 1 it builds into runaway self-oscillation that the saturation keeps bounded."),
             knob(mix, "mix", (0.0, 1.0), "", 2, "Blend of dry and echoed sound."),
+            Ctl::Section("repeats"),
+            knob(lowcut_hz, "low cut", (0.0, 1000.0), "Hz", 0, "Thin out each repeat so echoes don't muddy the voice. 0 is off."),
+            log_knob(highcut_hz, "high cut", (1000.0, 20000.0), "Hz", 0, "Darken each repeat, like tape. Fully up is off."),
+            knob(drive, "drive", (0.0, 1.0), "", 2, "Saturation in the repeats. Warms them and keeps high feedback under control."),
+            Ctl::Section("tape"),
+            knob(wow, "wow", (0.0, 1.0), "", 2, "Slow pitch drift, like a worn tape transport."),
+            knob(flutter, "flutter", (0.0, 1.0), "", 2, "Fast, fine pitch wobble."),
         ],
         P::Chorus { depth_ms, rate_hz, mix } => vec![
             knob(depth_ms, "depth", (0.0, 15.0), "ms", 1, "How far the copies wobble. More is lusher."),
