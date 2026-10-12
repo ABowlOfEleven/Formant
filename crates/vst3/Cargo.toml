@@ -11,7 +11,7 @@ json5.workspace = true
 vst3 = "0.3"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",

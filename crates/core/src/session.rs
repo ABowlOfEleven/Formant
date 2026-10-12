@@ -21,5 +21,5 @@ pub fn save(graph: &Graph) -> anyhow::Result<()> {
 pub fn load() -> Option<Graph> {
     let path = session_path()?;
     let text = std::fs::read_to_string(path).ok()?;
-    ron::from_str(&text).ok()
+    Graph::from_ron(&text).ok()
 }

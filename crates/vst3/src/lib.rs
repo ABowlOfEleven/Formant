@@ -119,13 +119,48 @@ pub fn standard_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Check that `binary` is a plugin module inside one of [`standard_dirs`] and
+/// return its canonical path.
+///
+/// Presets name plugin binaries by path, and presets are shared files. Without
+/// this check a preset could make Formant load (and run `DllMain` of) any DLL,
+/// including one on a remote share.
+pub fn trusted_binary(binary: &Path) -> anyhow::Result<PathBuf> {
+    check_binary(binary, &standard_dirs())
+}
+
+fn check_binary(binary: &Path, dirs: &[PathBuf]) -> anyhow::Result<PathBuf> {
+    use std::path::{Component, Prefix};
+    // Refuse UNC and device paths before touching the filesystem: resolving a
+    // path on a remote share already sends credentials to that host.
+    match binary.components().next() {
+        Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) => {}
+        _ => anyhow::bail!("plugin path is not on a local drive: {}", binary.display()),
+    }
+    // Bundles may hold the module as `.vst3` or `.dll` (see `find_binary`).
+    if !binary.extension().is_some_and(|x| x.eq_ignore_ascii_case("vst3") || x.eq_ignore_ascii_case("dll")) {
+        anyhow::bail!("not a plugin binary: {}", binary.display());
+    }
+    let real = binary
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("plugin not found: {} ({e})", binary.display()))?;
+    let inside = dirs
+        .iter()
+        .filter_map(|d| d.canonicalize().ok())
+        .any(|d| real.starts_with(d));
+    if !inside {
+        anyhow::bail!("plugin is outside the VST3 folders: {}", binary.display());
+    }
+    Ok(real)
+}
+
 /// Scan the standard directories for installed VST3 plugins.
 pub fn scan() -> Vec<Plugin> {
     let mut out = Vec::new();
     for dir in standard_dirs() {
         scan_dir(&dir, 1, &mut out);
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out.dedup_by(|a, b| a.binary == b.binary);
     out
 }
@@ -209,4 +244,53 @@ fn find_binary(bundle: &Path) -> Option<PathBuf> {
         .flatten()
         .map(|e| e.path())
         .find(|p| p.extension().is_some_and(|x| x == "vst3" || x == "dll"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("formant-vst3-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn binaries_inside_the_vst3_folders_are_trusted() {
+        let root = temp_dir("inside");
+        let bin = root.join("Vendor").join("Good.vst3");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, b"").unwrap();
+        assert!(check_binary(&bin, std::slice::from_ref(&root)).is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preset_supplied_paths_outside_the_folders_are_refused() {
+        let root = temp_dir("root");
+        let elsewhere = temp_dir("elsewhere");
+        let dirs = [root.clone()];
+        // A real file, right extension, wrong folder.
+        let stray = elsewhere.join("Evil.vst3");
+        std::fs::write(&stray, b"").unwrap();
+        assert!(check_binary(&stray, &dirs).is_err());
+        // Escaping the folder with `..` resolves outside it.
+        let dotdot = root.join("..").join(elsewhere.file_name().unwrap()).join("Evil.vst3");
+        assert!(check_binary(&dotdot, &dirs).is_err());
+        // A system DLL: wrong folder.
+        assert!(check_binary(Path::new(r"C:\Windows\System32\version.dll"), &dirs).is_err());
+        // Remote shares and device paths are refused before any file access.
+        assert!(check_binary(Path::new(r"\\attacker\share\x.vst3"), &dirs).is_err());
+        assert!(check_binary(Path::new(r"\\?\UNC\attacker\share\x.vst3"), &dirs).is_err());
+        assert!(check_binary(Path::new(r"\\.\pipe\x.vst3"), &dirs).is_err());
+        // Relative paths are refused.
+        assert!(check_binary(Path::new("x.vst3"), &dirs).is_err());
+        // Wrong extension inside the folder.
+        let txt = root.join("notes.txt");
+        std::fs::write(&txt, b"").unwrap();
+        assert!(check_binary(&txt, &dirs).is_err());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(elsewhere);
+    }
 }

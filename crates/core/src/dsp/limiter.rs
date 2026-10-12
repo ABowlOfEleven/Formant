@@ -1,76 +1,141 @@
-//! Peak limiter - a lookahead brickwall ceiling for safe output levels.
+//! Lookahead brickwall limiter with true-peak detection.
+//!
+//! References (docs/research/effects-references.md, section 2): the
+//! single-stage lookahead limiter from Zolzer's DAFX (delay line, windowed
+//! maximum, moving-average attack), ITU-R BS.1770 Annex 2 for true-peak
+//! measurement by 4x oversampling, and the dual-time-constant release model.
+//! It is deliberately one stage, working per sample: the two-stage
+//! (slow pre-gain plus delayed fast stage) and block backward-pass designs are
+//! under active patents and are not used.
 
-use crate::dsp::detector::{self, GainSmoother};
-use crate::dsp::{db_to_lin, Oversampler};
+use crate::dsp::detector;
+use crate::dsp::smooth::{Smoothed, GLIDE_MS};
+use crate::dsp::{db_to_lin, time_to_coef, Oversampler};
 use crate::types::Sample;
 
 /// Oversampling factor used for inter-sample peak detection.
 const TRUE_PEAK_OVERSAMPLE: usize = 4;
+/// Auto release: the slow branch charges only during sustained limiting.
+const AUTO_SLOW_ATTACK_MS: f32 = 300.0;
+const AUTO_SLOW_RELEASE_MS: f32 = 1500.0;
+
+/// Longest supported lookahead. The knob stops at 10 ms; preset values clamp here.
+pub const MAX_LOOKAHEAD_MS: f32 = 20.0;
+
+/// Lookahead window length for `ms` (at least one sample), clamped to the
+/// supported range.
+pub(crate) fn lookahead_samples(ms: f32, sample_rate: u32) -> usize {
+    crate::dsp::ms_to_buffer_len(ms, MAX_LOOKAHEAD_MS, sample_rate).max(1)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LimiterSettings {
+    pub ceiling_db: f32,
+    pub lookahead_ms: f32,
+    pub release_ms: f32,
+    /// Gain into the limiter. Pushing it up makes the output louder with the
+    /// ceiling held, the way a "maximizer" works.
+    pub drive_db: f32,
+    pub auto_release: bool,
+    /// Catch peaks that fall between samples (4x oversampled detection).
+    pub true_peak: bool,
+}
+
+impl Default for LimiterSettings {
+    fn default() -> Self {
+        Self {
+            ceiling_db: -1.0,
+            lookahead_ms: 2.0,
+            release_ms: 100.0,
+            drive_db: 0.0,
+            auto_release: false,
+            true_peak: true,
+        }
+    }
+}
 
 /// A lookahead brickwall limiter.
 ///
-/// A limiter without lookahead cannot win: no envelope follower can pull the
-/// gain down within the single sample it takes a plosive to arrive, so it ends
-/// up relying on a hard clamp, and clamping a waveform *is* clipping distortion.
-/// Every "p" and "b" pays for it.
-///
-/// So this one delays the audio by a couple of milliseconds and decides the gain
-/// from what is about to happen rather than what already did. The reduction is
-/// the running maximum over the whole lookahead window, which means it is
-/// already fully applied by the time the peak it was computed for arrives, and
-/// the gain can ride down smoothly instead of stepping.
-///
-/// Detection runs on a 4x oversampled copy, so peaks that fall *between* samples
-/// are caught too. A signal can sit under the ceiling at every sample and still
-/// overshoot once a converter reconstructs it, which is what "true peak" means
-/// and why streaming platforms measure it.
+/// The audio is delayed by the lookahead L. Per sample, the reduction a sample
+/// needs (with an instant attack and the chosen release) goes into a running
+/// maximum over L + 1 samples, and that is averaged over the last L samples.
+/// Every value in the average window includes the peak's full reduction by
+/// the time the peak leaves the delay line, so the average does too: the
+/// ceiling holds by construction, and the gain ramps down smoothly over the
+/// lookahead instead of stepping. A final clamp remains only as a guard.
 #[derive(Debug, Clone)]
 pub struct Limiter {
     sample_rate: u32,
+    s: LimiterSettings,
     ceiling: f32,
-    ceiling_db: f32,
-    /// Audio delay line, one lookahead window long.
+    drive: Smoothed,
     delay: Vec<f32>,
     pos: usize,
     window: SlidingMax,
-    smoother: GainSmoother,
+    /// Moving average of the windowed reduction (dB).
+    avg: Vec<f32>,
+    avg_pos: usize,
+    avg_sum: f64,
+    released: f32,
+    release: f32,
+    slow: f32,
+    slow_attack: f32,
+    slow_release: f32,
     peak_detect: Oversampler,
     n: usize,
+    reduction: f32,
 }
 
 impl Limiter {
-    pub fn new(sample_rate: u32, ceiling_db: f32, lookahead_ms: f32, release_ms: f32) -> Self {
+    pub fn new(sample_rate: u32, settings: LimiterSettings) -> Self {
         let mut l = Self {
             sample_rate,
+            s: settings,
             ceiling: 1.0,
-            ceiling_db: 0.0,
+            drive: Smoothed::new(db_to_lin(settings.drive_db), sample_rate, GLIDE_MS),
             delay: Vec::new(),
             pos: 0,
             window: SlidingMax::new(1),
-            // The attack constant only has to converge within the lookahead, so
-            // it is derived from it rather than exposed.
-            smoother: GainSmoother::new(sample_rate, 1.0, release_ms),
+            avg: Vec::new(),
+            avg_pos: 0,
+            avg_sum: 0.0,
+            released: 0.0,
+            release: 0.0,
+            slow: 0.0,
+            slow_attack: time_to_coef(AUTO_SLOW_ATTACK_MS, sample_rate),
+            slow_release: time_to_coef(AUTO_SLOW_RELEASE_MS, sample_rate),
             peak_detect: Oversampler::new(TRUE_PEAK_OVERSAMPLE),
             n: 0,
+            reduction: 0.0,
         };
-        l.configure(ceiling_db, lookahead_ms, release_ms);
+        l.s.lookahead_ms = f32::NAN; // force the buffers to be built
+        l.configure(settings);
         l
     }
 
-    pub fn configure(&mut self, ceiling_db: f32, lookahead_ms: f32, release_ms: f32) {
-        self.ceiling_db = ceiling_db.min(0.0);
-        self.ceiling = db_to_lin(self.ceiling_db);
-        let look = ((lookahead_ms.max(0.0) * 0.001 * self.sample_rate as f32) as usize).max(1);
-        if look != self.delay.len() {
-            self.delay = vec![0.0; look];
+    pub fn configure(&mut self, settings: LimiterSettings) {
+        let mut s = settings;
+        s.ceiling_db = s.ceiling_db.min(0.0);
+        s.release_ms = s.release_ms.max(1.0);
+        self.ceiling = db_to_lin(s.ceiling_db);
+        self.drive.set(db_to_lin(s.drive_db));
+        self.release = time_to_coef(s.release_ms, self.sample_rate);
+        let look = lookahead_samples(s.lookahead_ms, self.sample_rate);
+        // True-peak detection reports each sample a few samples late (the
+        // interpolation filter), so the audio waits that much longer too.
+        let detect_lag = if s.true_peak { self.peak_detect.latency_samples() } else { 0 };
+        let total = look + detect_lag;
+        if total != self.delay.len() || look != self.avg.len() || s.true_peak != self.s.true_peak {
+            self.delay = vec![0.0; total];
             self.pos = 0;
-            self.window = SlidingMax::new(look);
+            self.window = SlidingMax::new(look + 1);
+            self.avg = vec![0.0; look];
+            self.avg_pos = 0;
+            self.avg_sum = 0.0;
             self.n = 0;
+            self.peak_detect.reset();
         }
-        // Converge in roughly a fifth of the lookahead, so the reduction is in
-        // place well before the peak lands.
-        let attack_ms = (look as f32 / self.sample_rate as f32) * 1000.0 / 5.0;
-        self.smoother.configure(self.sample_rate, attack_ms.max(0.05), release_ms);
+        self.s = s;
     }
 
     /// Lookahead latency in samples.
@@ -80,34 +145,49 @@ impl Limiter {
 
     /// Current gain reduction in dB (>= 0), for metering.
     pub fn gain_reduction_db(&self) -> f32 {
-        self.smoother.current_db()
+        self.reduction
     }
 
     #[inline]
     pub fn process(&mut self, x: Sample) -> Sample {
-        // Detect on the oversampled signal so inter-sample peaks count.
-        let peak = self.peak_detect.upsample_peak(x).max(x.abs());
-        let over_db = (detector::lin_to_db(peak) - self.ceiling_db).max(0.0);
+        let x = x * self.drive.next();
+        // The limiter is the output's safety stage. A NaN or inf from upstream
+        // would poison the running average for a whole window, so it is silence.
+        let x = if x.is_finite() { x } else { 0.0 };
 
-        // Maximum reduction demanded anywhere in the lookahead window. Because
-        // the window spans exactly the samples between the one being emitted and
-        // the newest one, whatever is coming is already accounted for.
-        let needed_db = self.window.push(self.n, over_db);
+        // How far over the ceiling this sample is, in dB.
+        let peak = if self.s.true_peak { self.peak_detect.upsample_peak(x) } else { x.abs() };
+        let over = (detector::lin_to_db(peak) - self.s.ceiling_db).max(0.0);
+
+        // Instant attack, smooth release (and optionally a slow branch that
+        // only charges during sustained limiting).
+        self.released = over.max(self.release * self.released + (1.0 - self.release) * over);
+        let need = if self.s.auto_release {
+            let c = if over > self.slow { self.slow_attack } else { self.slow_release };
+            self.slow = c * self.slow + (1.0 - c) * over;
+            self.released.max(self.slow)
+        } else {
+            self.released
+        };
+
+        // Windowed maximum, then a moving average over the lookahead.
+        let windowed = self.window.push(self.n, need);
         self.n += 1;
-        let reduction_db = self.smoother.process(needed_db);
+        self.avg_sum += windowed as f64 - self.avg[self.avg_pos] as f64;
+        self.avg[self.avg_pos] = windowed;
+        self.avg_pos = (self.avg_pos + 1) % self.avg.len();
+        if self.avg_pos == 0 {
+            // Re-sum once per lap so float error can't accumulate.
+            self.avg_sum = self.avg.iter().map(|&v| v as f64).sum();
+        }
+        self.reduction = (self.avg_sum / self.avg.len() as f64) as f32;
 
         // Emit the delayed sample.
         let delayed = self.delay[self.pos];
         self.delay[self.pos] = x;
-        self.pos += 1;
-        if self.pos >= self.delay.len() {
-            self.pos = 0;
-        }
+        self.pos = (self.pos + 1) % self.delay.len();
 
-        // The smoothed gain is what shapes the sound; the min() is a guarantee
-        // that a sample can never leave above the ceiling even if the smoother
-        // has not fully converged. It should essentially never bind.
-        let mut gain = db_to_lin(-reduction_db);
+        let mut gain = db_to_lin(-self.reduction);
         let magnitude = delayed.abs();
         if magnitude * gain > self.ceiling {
             gain = self.ceiling / magnitude.max(1e-9);
@@ -165,8 +245,33 @@ mod tests {
     use crate::types::SAMPLE_RATE;
     use std::f32::consts::TAU;
 
+    #[test]
+    fn absurd_lookahead_is_clamped() {
+        for ms in [f32::INFINITY, f32::NAN, 1.0e9] {
+            let l = Limiter::new(SAMPLE_RATE, LimiterSettings { lookahead_ms: ms, ..Default::default() });
+            assert!(l.latency_samples() <= 1000, "{ms}: {}", l.latency_samples());
+        }
+    }
+
+    #[test]
+    fn non_finite_input_comes_out_silent_and_does_not_linger() {
+        let mut l = limiter(-1.0);
+        for x in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for _ in 0..100 {
+                assert!(l.process(x).is_finite());
+            }
+        }
+        // Ordinary signal right after is still limited, not NaN.
+        for n in 0..4800 {
+            let y = l.process(2.0 * (n as f32 * 0.05).sin());
+            assert!(y.is_finite() && y.abs() <= 0.9, "{y}");
+        }
+    }
     fn limiter(ceiling_db: f32) -> Limiter {
-        Limiter::new(SAMPLE_RATE, ceiling_db, 2.0, 100.0)
+        Limiter::new(
+            SAMPLE_RATE,
+            LimiterSettings { ceiling_db, lookahead_ms: 2.0, release_ms: 100.0, true_peak: false, ..Default::default() },
+        )
     }
 
     #[test]
@@ -196,35 +301,77 @@ mod tests {
         assert!(worst < 1e-3, "quiet signal altered by {worst}");
     }
 
-    /// The point of lookahead: a sudden transient must be caught by *gain*, not
-    /// by clamping. If the limiter were clipping the peak flat, the output
-    /// around it would sit pinned at the ceiling for several samples.
+    /// The lookahead construction must hold the ceiling on its own, without
+    /// the final guard clamp ever having to act. A clamp that acts is clipping.
     #[test]
-    fn catches_a_transient_without_clipping_it_flat() {
+    fn holds_the_ceiling_without_the_guard_clamp() {
         let mut lim = limiter(-6.0);
         let ceiling = db_to_lin(-6.0);
-        let mut out = Vec::new();
-        // Quiet, then a sharp burst, then quiet again.
-        for i in 0..SAMPLE_RATE / 2 {
-            let x = if (SAMPLE_RATE / 4..SAMPLE_RATE / 4 + 200).contains(&i) {
-                0.95 * (TAU * 1000.0 * i as f32 / SAMPLE_RATE as f32).sin()
-            } else {
-                0.02 * (TAU * 200.0 * i as f32 / SAMPLE_RATE as f32).sin()
-            };
-            out.push(lim.process(x));
+        let mut clamped = 0;
+        for i in 0..SAMPLE_RATE {
+            // Sudden bursts at random-ish moments, plus a steady tone.
+            let burst = if (i / 997) % 7 == 0 { 0.95 } else { 0.0 };
+            let x = burst * (TAU * 1000.0 * i as f32 / SAMPLE_RATE as f32).sin()
+                + 0.2 * (TAU * 150.0 * i as f32 / SAMPLE_RATE as f32).sin();
+            let lat = lim.latency_samples();
+            let delayed = lim.delay[lim.pos];
+            let y = lim.process(x);
+            let _ = lat;
+            // If the averaged gain alone would have exceeded the ceiling, the
+            // guard had to step in.
+            if delayed.abs() * db_to_lin(-lim.gain_reduction_db()) > ceiling * 1.0001 {
+                clamped += 1;
+            }
+            assert!(y.abs() <= ceiling + 1e-4);
         }
-        let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-        assert!(peak <= ceiling + 1e-4, "burst broke the ceiling: {peak}");
+        assert_eq!(clamped, 0, "guard clamp acted {clamped} times");
+    }
 
-        // Count samples sitting right at the ceiling. Genuine clipping pins many
-        // consecutive samples there; gain riding touches it only at the crests.
-        let pinned = out.iter().filter(|v| (v.abs() - ceiling).abs() < 1e-5).count();
-        assert!(pinned < 40, "{pinned} samples pinned at the ceiling - that is clipping");
+    /// True-peak detection catches a peak that sits between samples: a sine at
+    /// a quarter of the sample rate, phased so every sample lands at 0.707 of
+    /// the true crest.
+    #[test]
+    fn true_peak_catches_inter_sample_overs() {
+        let reduction = |true_peak: bool| {
+            let mut l = Limiter::new(
+                SAMPLE_RATE,
+                // -5 dB ceiling: the samples (0.53, -5.5 dB) sit under it, the
+                // true crest (0.75, -2.5 dB) is 2.5 dB over.
+                LimiterSettings { ceiling_db: -5.0, true_peak, ..Default::default() },
+            );
+            for i in 0..SAMPLE_RATE / 4 {
+                let phase = std::f32::consts::FRAC_PI_4 + std::f32::consts::FRAC_PI_2 * i as f32;
+                l.process(0.75 * phase.sin()); // samples at +-0.53, true crest 0.75
+            }
+            l.gain_reduction_db()
+        };
+        assert!(reduction(false) < 0.1, "sample-peak mode sees no over");
+        assert!(reduction(true) > 1.5, "true-peak mode should see the 0.75 crest: {:.2} dB", reduction(true));
+    }
+
+    #[test]
+    fn drive_raises_level_but_not_peaks() {
+        let run = |drive_db: f32| {
+            let mut l = Limiter::new(SAMPLE_RATE, LimiterSettings { drive_db, ceiling_db: -1.0, ..Default::default() });
+            let (mut peak, mut sq) = (0.0f32, 0.0f64);
+            for i in 0..SAMPLE_RATE {
+                let y = l.process(0.3 * (TAU * 200.0 * i as f32 / SAMPLE_RATE as f32).sin());
+                if i > SAMPLE_RATE / 2 {
+                    peak = peak.max(y.abs());
+                    sq += (y as f64).powi(2);
+                }
+            }
+            (peak, sq)
+        };
+        let (p0, e0) = run(0.0);
+        let (p1, e1) = run(12.0);
+        assert!(e1 > e0 * 2.0, "drive should make it louder");
+        assert!(p1 <= db_to_lin(-1.0) + 1e-4 && p0 <= db_to_lin(-1.0) + 1e-4);
     }
 
     #[test]
     fn reports_lookahead_latency() {
-        let lim = Limiter::new(SAMPLE_RATE, -1.0, 2.0, 100.0);
+        let lim = limiter(-1.0);
         let expected = (2.0 * 0.001 * SAMPLE_RATE as f32) as usize;
         assert_eq!(lim.latency_samples(), expected);
     }
@@ -235,7 +382,6 @@ mod tests {
         assert_eq!(w.push(0, 1.0), 1.0);
         assert_eq!(w.push(1, 5.0), 5.0);
         assert_eq!(w.push(2, 2.0), 5.0);
-        // 5.0 was at index 1; at index 4 the window covers 2..=4, so it is gone.
         assert_eq!(w.push(3, 2.0), 5.0);
         assert_eq!(w.push(4, 2.0), 2.0);
         assert_eq!(w.push(5, 9.0), 9.0);

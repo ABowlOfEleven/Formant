@@ -1,7 +1,6 @@
 //! The editor half of a hosted plugin (UI thread): the edit controller, the
 //! host component handler, and the plugin's own `IPlugView` in a native window.
 
-use std::ffi::c_void;
 use std::sync::{Arc, Once};
 
 use anyhow::{anyhow, bail, Result};
@@ -38,6 +37,8 @@ pub struct PluginEditor {
 }
 
 impl PluginEditor {
+    // One argument per piece of the VST3 editor setup; host.rs is the only caller.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         module: Arc<Module>,
         host_context: Option<ComPtr<FUnknown>>,
@@ -111,7 +112,7 @@ impl PluginEditor {
         // SAFETY: standard IPlugView host sequence.
         unsafe {
             let view = ComPtr::<IPlugView>::from_raw(
-                self.controller.createView(b"editor\0".as_ptr() as *const i8),
+                self.controller.createView(c"editor".as_ptr()),
             )
             .ok_or_else(|| anyhow!("plugin has no editor view"))?;
 
@@ -125,7 +126,7 @@ impl PluginEditor {
             let h = (rect.bottom - rect.top).max(120);
 
             let hwnd = create_window(&self.name, w, h)?;
-            if view.attached(hwnd.0 as *mut c_void, kPlatformTypeHWND) != kResultOk {
+            if view.attached(hwnd.0, kPlatformTypeHWND) != kResultOk {
                 let _ = DestroyWindow(hwnd);
                 bail!("plugin editor failed to attach");
             }
@@ -220,7 +221,7 @@ fn create_window(title: &str, width: i32, height: i32) -> Result<HWND> {
             rect.bottom - rect.top,
             None,
             None,
-            HINSTANCE(hinstance.0),
+            Some(HINSTANCE(hinstance.0)),
             None,
         )?;
         Ok(hwnd)

@@ -7,11 +7,11 @@
 use crate::types::Sample;
 
 // Stage 1: high-shelf.
-const B1: [f32; 3] = [1.53512485958697, -2.69169618940638, 1.19839281085285];
-const A1: [f32; 2] = [-1.69065929318241, 0.73248077421585];
+const B1: [f32; 3] = [1.535_124_9, -2.691_696_2, 1.198_392_9];
+const A1: [f32; 2] = [-1.690_659_3, 0.732_480_76];
 // Stage 2: RLB high-pass.
 const B2: [f32; 3] = [1.0, -2.0, 1.0];
-const A2: [f32; 2] = [-1.99004745483398, 0.99007225036621];
+const A2: [f32; 2] = [-1.990_047_5, 0.990_072_25];
 
 /// Streaming momentary-loudness meter. Feed it the signal block by block and
 /// read back LUFS.

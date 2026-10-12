@@ -27,6 +27,8 @@ unsafe impl Sync for Module {}
 impl Module {
     /// Load the DLL, call `InitDll`, and return the module plus its factory.
     pub fn load(binary: &Path) -> Result<(Arc<Module>, ComPtr<IPluginFactory>)> {
+        // The path can come from a preset file; only load installed plugins.
+        let binary = crate::trusted_binary(binary)?;
         let wide = HSTRING::from(binary.as_os_str());
         // SAFETY: standard module load + factory retrieval.
         unsafe {

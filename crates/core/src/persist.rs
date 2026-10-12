@@ -8,6 +8,24 @@
 
 use std::path::{Path, PathBuf};
 
+/// Fail if any number in RON text is NaN or infinite. RON accepts `inf` and
+/// `NaN`, and saved files are shared, so a non-finite gain or frequency could
+/// otherwise turn the whole signal into NaN that no later stage removes.
+pub(crate) fn reject_non_finite(text: &str) -> anyhow::Result<()> {
+    fn finite(v: &ron::Value) -> bool {
+        match v {
+            ron::Value::Number(n) => n.into_f64().is_finite(),
+            ron::Value::Seq(items) => items.iter().all(finite),
+            ron::Value::Map(map) => map.iter().all(|(k, v)| finite(k) && finite(v)),
+            ron::Value::Option(Some(v)) => finite(v),
+            _ => true,
+        }
+    }
+    let value: ron::Value = ron::from_str(text)?;
+    anyhow::ensure!(finite(&value), "file contains a number that is not finite (NaN or inf)");
+    Ok(())
+}
+
 /// `path` with `suffix` appended, e.g. `config.ron` -> `config.ron.bak`.
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
     let mut s = path.as_os_str().to_os_string();

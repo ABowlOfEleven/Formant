@@ -9,10 +9,13 @@ use crate::types::Sample;
 ///
 /// The callback receives a block of captured mic samples and fills the output
 /// block (equal length) with processed samples.
+/// The DSP callback a backend runs once per block: input in, output out.
+pub type ProcessFn = Box<dyn FnMut(&[Sample], &mut [Sample]) + Send>;
+
 pub trait AudioBackend {
     fn start(
         &mut self,
-        callback: Box<dyn FnMut(&[Sample], &mut [Sample]) + Send>,
+        callback: ProcessFn,
     ) -> anyhow::Result<()>;
 
     fn stop(&mut self);

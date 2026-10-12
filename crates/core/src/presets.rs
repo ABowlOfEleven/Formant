@@ -2,10 +2,13 @@
 //!
 //! Stored as RON under `%APPDATA%\Formant\presets`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
+use crate::dsp::compressor::{Character, Detector};
+use crate::dsp::deesser::{DeessDetection, DeessMode};
 use crate::graph::{Graph, NodeKind, NodeParams};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,8 +39,13 @@ impl Preset {
         )?)
     }
 
+    /// Parse a preset. Presets are shared files: numbers must be finite and
+    /// the graph within [`crate::graph::MAX_NODES`].
     pub fn from_ron(s: &str) -> anyhow::Result<Self> {
-        Ok(ron::from_str(s)?)
+        crate::persist::reject_non_finite(s)?;
+        let preset: Self = ron::from_str(s)?;
+        preset.graph.check_limits()?;
+        Ok(preset)
     }
 
     /// `%APPDATA%\Formant\presets`.
@@ -52,6 +60,16 @@ impl Preset {
         let path = dir.join(format!("{}.ron", sanitize(&self.name)));
         crate::persist::write_backup(&path, &self.to_ron()?)?;
         Ok(path)
+    }
+
+    /// `name`, or `name (imported)`, `name (imported 2)`, ... whichever does not
+    /// collide with a preset already saved. Different names can share a file
+    /// (`sanitize` maps them together), so this compares file names.
+    pub fn unused_name(name: &str) -> String {
+        match Self::dir() {
+            Some(dir) => unused_name_in(&dir, name),
+            None => name.to_string(),
+        }
     }
 
     /// Delete this preset's file, if present.
@@ -94,22 +112,56 @@ impl Preset {
     }
 
     /// Load every `.ron` preset in the presets directory.
+    ///
+    /// A file that cannot be read or parsed is skipped, and the problem is sent
+    /// to the reporter set with [`set_load_error_reporter`] (if any), so a
+    /// preset never just disappears without a trace.
     pub fn load_all() -> Vec<Preset> {
         let Some(dir) = Self::dir() else {
             return Vec::new();
         };
+        Self::load_dir(&dir, |path, err| {
+            if let Some(report) = LOAD_ERROR_REPORTER.get() {
+                report(&format!("preset {} skipped: {err:#}", path.display()));
+            }
+        })
+    }
+
+    /// Load every `.ron` preset in `dir`, calling `on_error` for each file that
+    /// fails to read or parse. Sorted by name, case-insensitive.
+    pub fn load_dir(dir: &Path, mut on_error: impl FnMut(&Path, &anyhow::Error)) -> Vec<Preset> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Vec::new();
         };
         let mut presets: Vec<Preset> = entries
             .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "ron"))
-            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-            .filter_map(|s| Preset::from_ron(&s).ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "ron"))
+            .filter_map(|path| {
+                let loaded = std::fs::read_to_string(&path)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|s| Preset::from_ron(&s));
+                match loaded {
+                    Ok(preset) => Some(preset),
+                    Err(err) => {
+                        on_error(&path, &err);
+                        None
+                    }
+                }
+            })
             .collect();
-        presets.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        presets.sort_by_key(|a| a.name.to_lowercase());
         presets
     }
+}
+
+static LOAD_ERROR_REPORTER: OnceLock<fn(&str)> = OnceLock::new();
+
+/// Set where [`Preset::load_all`] reports presets it had to skip. Core has no
+/// logger of its own; the app passes its log function here once at startup.
+/// Later calls are ignored.
+pub fn set_load_error_reporter(report: fn(&str)) {
+    let _ = LOAD_ERROR_REPORTER.set(report);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +172,7 @@ impl Preset {
 /// and a gate. Nothing here is a matter of taste.
 fn front_end(hpf_hz: f32) -> Vec<NodeParams> {
     vec![
-        NodeParams::HighPass { cutoff_hz: hpf_hz, steep: true },
+        NodeParams::HighPass { cutoff_hz: hpf_hz, steep: true, slope_db: 18 },
         NodeKind::Denoise.default_params(),
         NodeKind::Gate.default_params(),
     ]
@@ -136,7 +188,22 @@ fn eq(
     high_db: f32,
     high_hz: f32,
 ) -> NodeParams {
-    NodeParams::Eq { low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz }
+    NodeParams::Eq {
+        low_db,
+        mid_db,
+        high_db,
+        low_hz,
+        mid_hz,
+        mid_q,
+        high_hz,
+        low_bell: false,
+        low_mid_db: 0.0,
+        low_mid_hz: crate::dsp::eq::DEFAULT_LOW_MID_HZ,
+        low_mid_q: 1.0,
+        high_bell: false,
+        proportional_q: false,
+        output_db: 0.0,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -149,15 +216,45 @@ fn comp(
     makeup_db: f32,
     mix: f32,
 ) -> NodeParams {
-    NodeParams::Compressor { threshold_db, ratio, knee_db, attack_ms, release_ms, makeup_db, mix }
+    NodeParams::Compressor {
+        threshold_db,
+        ratio,
+        knee_db,
+        attack_ms,
+        release_ms,
+        makeup_db,
+        mix,
+        detector: Detector::Rms,
+        sc_hpf_hz: 80.0,
+        auto_release: false,
+        auto_makeup: false,
+        character: Character::Clean,
+    }
 }
 
 fn deess(threshold_db: f32, ratio: f32, split_hz: f32, range_db: f32) -> NodeParams {
-    NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db }
+    NodeParams::DeEsser {
+        threshold_db,
+        ratio,
+        split_hz,
+        range_db,
+        rel_threshold_db: -12.0,
+        q: 1.2,
+        mode: DeessMode::Split,
+        detection: DeessDetection::Absolute,
+        listen: false,
+    }
 }
 
 fn limiter(ceiling_db: f32) -> NodeParams {
-    NodeParams::Limiter { ceiling_db, lookahead_ms: 2.0, release_ms: 100.0 }
+    NodeParams::Limiter {
+        ceiling_db,
+        lookahead_ms: 2.0,
+        release_ms: 100.0,
+        drive_db: 0.0,
+        auto_release: false,
+        true_peak: true,
+    }
 }
 
 /// Tight, present, and controlled - the sound of someone reading the news.
@@ -181,7 +278,14 @@ fn warm() -> Graph {
     chain.extend([
         deess(-26.0, 3.5, 7000.0, 6.0),
         comp(-24.0, 2.5, 10.0, 15.0, 150.0, 3.0, 0.8),
-        NodeParams::Saturator { drive: 2.2, mix: 0.3 },
+        NodeParams::Saturator {
+            drive: 2.2,
+            mix: 0.3,
+            kind: crate::dsp::saturator::SatKind::Soft,
+            bias: 0.0,
+            tone_hz: 20_000.0,
+            output_db: 0.0,
+        },
         eq(2.5, 140.0, -1.5, 800.0, 1.2, -1.0, 9_000.0),
         limiter(-1.0),
     ]);
@@ -208,9 +312,75 @@ fn sanitize(name: &str) -> String {
         .collect()
 }
 
+fn unused_name_in(dir: &Path, name: &str) -> String {
+    let taken = |n: &str| dir.join(format!("{}.ron", sanitize(n))).exists();
+    if !taken(name) {
+        return name.to_string();
+    }
+    (1..)
+        .map(|i| if i == 1 { format!("{name} (imported)") } else { format!("{name} (imported {i})") })
+        .find(|n| !taken(n))
+        .expect("an unbounded range always finds a free name")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn importing_never_replaces_an_existing_preset() {
+        let dir = std::env::temp_dir().join(format!("formant-import-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Standard_Vocal.ron"), "").unwrap();
+
+        assert_eq!(unused_name_in(&dir, "Fresh"), "Fresh");
+        // "Standard?Vocal" sanitizes onto the existing file.
+        assert_eq!(unused_name_in(&dir, "Standard?Vocal"), "Standard?Vocal (imported)");
+        std::fs::write(dir.join("Standard_Vocal__imported_.ron"), "").unwrap();
+        assert_eq!(unused_name_in(&dir, "Standard Vocal"), "Standard Vocal (imported 2)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_finite_numbers_are_refused() {
+        for bad in ["inf", "-inf", "NaN"] {
+            let text = format!(
+                "(name: \"evil\", graph: (nodes: [(id: 1, params: Gain(gain_db: {bad}), bypass: false, pos: (0.0, 0.0))]))"
+            );
+            assert!(Preset::from_ron(&text).is_err(), "{bad} should be refused");
+        }
+        // Ordinary presets still load.
+        for p in Preset::factory() {
+            assert!(Preset::from_ron(&p.to_ron().unwrap()).is_ok(), "{} should load", p.name);
+        }
+    }
+
+    #[test]
+    fn oversized_graphs_are_refused() {
+        let node = "(id: 1, params: Reverb(room_size: 0.5, damping: 0.5, mix: 0.2), bypass: false, pos: (0.0, 0.0)),";
+        let text = |count: usize| format!("(name: \"big\", graph: (nodes: [{}]))", node.repeat(count));
+        assert!(Preset::from_ron(&text(crate::graph::MAX_NODES)).is_ok());
+        assert!(Preset::from_ron(&text(crate::graph::MAX_NODES + 1)).is_err());
+    }
+
+    /// A broken file is reported and skipped; the good ones still load.
+    #[test]
+    fn load_dir_reports_presets_it_cannot_parse() {
+        let dir = std::env::temp_dir().join(format!("formant-presets-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("good.ron"), Preset::default().to_ron().unwrap()).unwrap();
+        std::fs::write(dir.join("broken.ron"), "(name: \"broken\", graph: (nodes: [(id: 1, params: Nope)]))").unwrap();
+        std::fs::write(dir.join("notes.txt"), "not a preset").unwrap();
+
+        let mut failed = Vec::new();
+        let presets = Preset::load_dir(&dir, |path, _| failed.push(path.file_name().unwrap().to_owned()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(presets.len(), 1);
+        assert_eq!(failed, vec![std::ffi::OsString::from("broken.ron")]);
+    }
 
     #[test]
     fn ron_round_trips() {

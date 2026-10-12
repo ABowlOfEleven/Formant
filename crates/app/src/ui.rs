@@ -7,13 +7,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
 use formant_audio::devices::{self, Direction};
 use formant_audio::{hotkeys, Action};
 use formant_core::{Config, Graph, MuteMode, NodeId, NodeKind, NodeParams, Preset};
 
 use crate::engine::Engine;
+use crate::hw;
 use crate::theme;
 
 const NODE_SIZE: Vec2 = Vec2::new(170.0, 66.0);
@@ -166,7 +167,9 @@ impl FormantApp {
     /// the `Vst3` nodes in the graph. Instantiation (slow) happens here on the UI
     /// thread; the live instance is handed to the audio thread via the engine.
     fn reconcile_vsts(&mut self) {
-        let want: Vec<(NodeId, String, Vec<(u32, f64)>)> = self
+        /// A Vst3 node to keep loaded: its id, binary path, and stored params.
+        type VstWant = (NodeId, String, Vec<(u32, f64)>);
+        let want: Vec<VstWant> = self
             .graph
             .nodes
             .iter()
@@ -503,14 +506,23 @@ impl FormantApp {
         let Some(path) = rfd::FileDialog::new().add_filter("Formant preset", &["ron"]).pick_file() else {
             return;
         };
-        match std::fs::read_to_string(&path).ok().and_then(|s| Preset::from_ron(&s).ok()) {
-            Some(p) => {
-                let _ = p.save();
-                self.presets = Preset::load_all();
-                self.status = format!("imported '{}'", p.name);
+        let preset = std::fs::read_to_string(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|s| Preset::from_ron(&s));
+        self.status = match preset {
+            Ok(mut p) => {
+                // Never replace a preset the user already has.
+                p.name = Preset::unused_name(&p.name);
+                match p.save() {
+                    Ok(_) => {
+                        self.presets = Preset::load_all();
+                        format!("imported '{}'", p.name)
+                    }
+                    Err(e) => format!("import failed: {e}"),
+                }
             }
-            None => self.status = "import failed (not a valid preset)".into(),
-        }
+            Err(e) => format!("import failed: {e}"),
+        };
     }
 }
 
@@ -555,7 +567,7 @@ impl eframe::App for FormantApp {
         // Recover from a lost audio device (unplug, disable, default change) by
         // restarting the engine, throttled so a truly-gone device doesn't loop.
         if self.engine.device_lost() {
-            let due = self.last_recovery.map_or(true, |t| t.elapsed().as_secs_f32() > 3.0);
+            let due = self.last_recovery.is_none_or(|t| t.elapsed().as_secs_f32() > 3.0);
             if due {
                 crate::logging::line("audio device lost; restarting the engine to recover");
                 self.restart_engine();
@@ -609,7 +621,7 @@ impl eframe::App for FormantApp {
             self.spectrum.update(&self.scope_buf);
         }
         self.tick_calibration();
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             paint_backdrop(ui);
             match self.tab {
                 Tab::Mixer => self.tab_mixer(ui),
@@ -660,7 +672,8 @@ impl FormantApp {
         let needs_cable = !self.render_devices.is_empty()
             && formant_audio::devices::detect_cable(&self.render_devices).is_none();
         let audio_lost = self.engine.device_lost();
-        egui::Panel::top("top").show_inside(ui, |ui| {
+        egui::Panel::top("top").show(ui, |ui| {
+            let strip = ui.painter().add(egui::Shape::Noop);
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("FORMANT").color(theme::CYAN).strong().size(22.0));
@@ -696,9 +709,9 @@ impl FormantApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let bypassed = self.engine.controls.global_bypass();
                     let (txt, col) = if bypassed {
-                        ("● BYPASSED", theme::EMBER)
+                        ("BYPASSED", theme::EMBER)
                     } else {
-                        ("● live", theme::GOOD)
+                        ("LIVE", theme::GOOD)
                     };
                     if ui.button(RichText::new(txt).color(col).strong()).on_hover_text("Turn ALL processing off - passes your raw mic straight through.").clicked() {
                         self.engine.controls.toggle_bypass();
@@ -706,14 +719,9 @@ impl FormantApp {
                 });
             });
             ui.add_space(6.0);
-            // Accent rule under the header.
-            let r = ui.max_rect();
-            let y = r.bottom();
-            ui.painter().line_segment(
-                [egui::pos2(r.left(), y), egui::pos2(r.right(), y)],
-                egui::Stroke::new(1.5, theme::CYAN.gamma_multiply(0.5)),
-            );
-        });
+            let rect = ui.min_rect().expand2(Vec2::new(8.0, 2.0));
+            ui.painter().set(strip, hw::header_strip(rect));
+       });
     }
 
     fn tab_mixer(&mut self, ui: &mut egui::Ui) {
@@ -722,185 +730,221 @@ impl FormantApp {
             (m.in_peak(), m.out_peak(), m.vad(), m.gain_reduction_db(), m.lufs())
         };
 
-        // -- Meters + transport -------------------------------------------
-        theme::card(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading(RichText::new("MIXER").color(theme::CYAN));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let bypassed = self.engine.controls.global_bypass();
-                    let (txt, col) = if bypassed { ("● BYPASSED", theme::EMBER) } else { ("● live", theme::GOOD) };
-                    if ui.button(RichText::new(txt).color(col).strong()).on_hover_text("Turn ALL processing off - passes your raw mic straight through.").clicked() {
-                        self.engine.controls.toggle_bypass();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(4.0);
+            // -- Master section: meter bridge, screen, transport ----------
+            hw::rack_panel(ui, "MASTER", theme::CYAN, |ui| {
+                ui.horizontal_top(|ui| {
+                    let meter = Vec2::new(20.0, 150.0);
+                    hw::led_ladder(ui, egui::Id::new("m-in"), "IN", in_peak, meter, "Incoming microphone level.");
+                    hw::led_ladder(ui, egui::Id::new("m-out"), "OUT", out_peak, meter, "Processed level sent to your monitor and the virtual mic.");
+                    hw::led_ladder(ui, egui::Id::new("m-vad"), "VOICE", vad, meter, "How confident the AI is that you're speaking right now.");
+                    hw::led_ladder(
+                        ui,
+                        egui::Id::new("m-gr"),
+                        "GR",
+                        (gr / 20.0).clamp(0.0, 1.0),
+                        meter,
+                        "How much the compressor is currently turning the level down.",
+                    );
+                    ui.add_space(10.0);
+
+                    let side = 214.0;
+                    let screen_w = (ui.available_width() - side - 16.0).max(260.0);
+                    let delay_ms = self.graph.latency_samples() as f32 / formant_core::SAMPLE_RATE as f32 * 1000.0;
+                    let bands = self.spectrum.bands;
+                    let description = format!(
+                        "Output display. Loudness {}. Added delay {delay_ms:.0} milliseconds.",
+                        if lufs <= -69.0 { "quiet".to_string() } else { format!("{lufs:.1} LUFS") }
+                    );
+                    hw::screen(ui, Vec2::new(screen_w, 168.0), &description, |p, rect| {
+                        paint_spectrum(p, rect.shrink2(Vec2::new(8.0, 6.0)), &bands);
+                        let loud = if lufs <= -69.0 { "  quiet".to_string() } else { format!("{lufs:>5.1} LUFS") };
+                        let near = lufs > -20.0 && lufs < -12.0;
+                        p.text(rect.left_top() + Vec2::new(10.0, 8.0), Align2::LEFT_TOP, "LOUDNESS", FontId::monospace(10.0), hw::READOUT.gamma_multiply(0.55));
+                        p.text(
+                            rect.left_top() + Vec2::new(10.0, 21.0),
+                            Align2::LEFT_TOP,
+                            loud,
+                            FontId::monospace(17.0),
+                            if near { theme::GOOD } else { hw::READOUT },
+                        );
+                        p.text(rect.right_top() + Vec2::new(-10.0, 8.0), Align2::RIGHT_TOP, "ADDED DELAY", FontId::monospace(10.0), hw::READOUT.gamma_multiply(0.55));
+                        p.text(
+                            rect.right_top() + Vec2::new(-10.0, 21.0),
+                            Align2::RIGHT_TOP,
+                            format!("{delay_ms:.0} ms"),
+                            FontId::monospace(17.0),
+                            if delay_ms < 30.0 { theme::GOOD } else { theme::EMBER },
+                        );
+                    })
+                    .on_hover_text(
+                        "Live spectrum of the processed output (low on the left). Loudness is momentary LUFS; \
+                         many voice-chat and streaming targets sit around -16. Added delay is what your chain \
+                         adds: under about 30 ms is comfortable to monitor live.",
+                    );
+                    ui.add_space(12.0);
+
+                    ui.vertical(|ui| {
+                        ui.set_width(side);
+                        let bypassed = self.engine.controls.global_bypass();
+                        let (label, col) = if bypassed { ("BYPASSED", theme::EMBER) } else { ("PROCESSING", theme::GOOD) };
+                        if hw::led_toggle_named(ui, label, "Processing", !bypassed, col, side)
+                            .on_hover_text("Turn ALL processing off - passes your raw mic straight through.")
+                            .clicked()
+                        {
+                            self.engine.controls.toggle_bypass();
+                        }
+                        ui.add_space(6.0);
+                        hw::silk_label(ui, "MIC MODE", 10.5);
+                        let cur = self.engine.controls.mode();
+                        let half = (side - ui.spacing().item_spacing.x) / 2.0;
+                        for row in [[MuteMode::Vad, MuteMode::PushToTalk], [MuteMode::Toggle, MuteMode::AlwaysOpen]] {
+                            ui.horizontal(|ui| {
+                                for m in row {
+                                    if hw::led_option(ui, m.label(), cur == m, theme::CYAN, half).on_hover_text(mode_help(m)).clicked() {
+                                        self.engine.controls.set_mode(m);
+                                    }
+                                }
+                            });
+                        }
+                        ui.add_space(6.0);
+                        match &self.calibration {
+                            None => {
+                                if hw::led_button(ui, "Calibrate gate", false, theme::EMBER, side)
+                                    .on_hover_text("Measures your background noise, then your voice, and sets the gate threshold between them. Follow the prompts.")
+                                    .clicked()
+                                {
+                                    self.start_calibration();
+                                }
+                            }
+                            Some(cal) => {
+                                let msg = match cal.phase {
+                                    CalPhase::Quiet => "Stay quiet...",
+                                    CalPhase::Talk => "Now talk normally...",
+                                };
+                                if hw::led_button(ui, msg, true, theme::EMBER, side).on_hover_text("Click to cancel.").clicked() {
+                                    self.calibration = None;
+                                }
+                            }
+                        }
+                    });
+                });
+            });
+
+            // -- Presets ---------------------------------------------------
+            ui.add_space(14.0);
+            hw::rack_panel(ui, "PRESETS", theme::EMBER, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let presets = self.presets.clone();
+                    if presets.is_empty() {
+                        hw::silk_label(ui, "no presets yet - save one, or import in Setup", 11.0);
+                    }
+                    for preset in presets {
+                        let w = (preset.name.len() as f32 * 7.4 + 36.0).max(90.0);
+                        if hw::led_button(ui, &preset.name, false, theme::EMBER, w).clicked() {
+                            self.graph = preset.graph.clone();
+                            self.selected = None;
+                            self.status = format!("loaded '{}'", preset.name);
+                        }
+                    }
+                    ui.add_space(12.0);
+                    ui.add(egui::TextEdit::singleline(&mut self.new_preset_name).hint_text("new preset name").desired_width(140.0));
+                    if hw::led_button(ui, "Save", false, theme::GOOD, 70.0).clicked() && !self.new_preset_name.trim().is_empty() {
+                        let preset = Preset::new(self.new_preset_name.trim(), self.graph.clone());
+                        self.status = match preset.save() {
+                            Ok(_) => format!("saved '{}'", preset.name),
+                            Err(e) => format!("save failed: {e}"),
+                        };
+                        self.new_preset_name.clear();
+                        self.presets = Preset::load_all();
                     }
                 });
             });
-            ui.add_space(4.0);
-            meter(ui, "input", in_peak, "Incoming microphone level.");
-            meter(ui, "output", out_peak, "Processed level sent to your monitor and the virtual mic.");
-            meter(ui, "voice (VAD)", vad, "How confident the AI is that you're speaking right now.");
-            meter(ui, "comp GR", (gr / 20.0).clamp(0.0, 1.0), "How much the compressor is currently turning the level down.");
 
-            // Loudness readout (momentary LUFS) with a streaming-target hint.
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("loudness").color(theme::MUTED).small())
-                    .on_hover_text("Momentary loudness in LUFS (ITU-R BS.1770). Many voice-chat and streaming targets sit around -16 LUFS.");
-                let txt = if lufs <= -69.0 { "quiet".to_string() } else { format!("{lufs:.1} LUFS") };
-                let near_target = lufs > -20.0 && lufs < -12.0;
-                ui.label(RichText::new(txt).color(if near_target { theme::GOOD } else { theme::TEXT }).strong());
-            });
-
-            // How much delay the current chain adds. Worth showing, because it
-            // is what decides whether monitoring yourself feels immediate.
-            ui.horizontal(|ui| {
-                let samples = self.graph.latency_samples();
-                let ms = samples as f32 / formant_core::SAMPLE_RATE as f32 * 1000.0;
-                ui.label(RichText::new("added delay").color(theme::MUTED).small())
-                    .on_hover_text(
-                        "Delay your chain adds, from nodes that have to look ahead or work a frame at a time \
-                         (noise reduction, gate and limiter lookahead, pitch and autotune). Under about 30 ms \
-                         is comfortable to monitor live; past that you start hearing yourself echo.",
-                    );
-                let comfortable = ms < 30.0;
-                ui.label(
-                    RichText::new(format!("{ms:.0} ms"))
-                        .color(if comfortable { theme::GOOD } else { theme::EMBER })
-                        .strong(),
-                );
-            });
-
-            // Spectrum analyzer.
-            spectrum_view(ui, &self.spectrum.bands);
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("mute").color(theme::MUTED).small())
-                    .on_hover_text("How the mic decides when to open/close.");
-                let cur = self.engine.controls.mode();
-                for m in [MuteMode::Vad, MuteMode::PushToTalk, MuteMode::Toggle, MuteMode::AlwaysOpen] {
-                    if ui.selectable_label(cur == m, m.label()).on_hover_text(mode_help(m)).clicked() {
-                        self.engine.controls.set_mode(m);
-                    }
-                }
-            });
-
-            // Gate auto-calibration.
-            ui.horizontal(|ui| {
-                match &self.calibration {
-                    None => {
-                        if ui
-                            .button("Calibrate gate")
-                            .on_hover_text("Measures your background noise, then your voice, and sets the gate threshold between them. Follow the prompts.")
-                            .clicked()
-                        {
-                            self.start_calibration();
-                        }
-                    }
-                    Some(cal) => {
-                        let (msg, col) = match cal.phase {
-                            CalPhase::Quiet => ("Calibrating: stay quiet...", theme::EMBER),
-                            CalPhase::Talk => ("Calibrating: now talk normally...", theme::GOOD),
-                        };
-                        ui.label(RichText::new(msg).color(col).strong());
-                        if ui.button("Cancel").clicked() {
-                            self.calibration = None;
-                        }
-                    }
-                }
-            });
-        });
-
-        // -- Preset quick-switch ------------------------------------------
-        ui.add_space(8.0);
-        theme::card(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("PRESETS").color(theme::CYAN).strong());
-                ui.add(egui::TextEdit::singleline(&mut self.new_preset_name).hint_text("name").desired_width(120.0));
-                if ui.button("Save").clicked() && !self.new_preset_name.trim().is_empty() {
-                    let preset = Preset::new(self.new_preset_name.trim(), self.graph.clone());
-                    self.status = match preset.save() {
-                        Ok(_) => format!("saved '{}'", preset.name),
-                        Err(e) => format!("save failed: {e}"),
-                    };
-                    self.new_preset_name.clear();
-                    self.presets = Preset::load_all();
-                }
-            });
-            if self.presets.is_empty() {
-                ui.label(RichText::new("no presets - save one, or import in Setup").color(theme::MUTED).small());
-            }
-            let presets = self.presets.clone();
-            ui.horizontal_wrapped(|ui| {
-                for preset in presets {
-                    if ui.button(&preset.name).clicked() {
-                        self.graph = preset.graph.clone();
-                        self.selected = None;
-                        self.status = format!("loaded '{}'", preset.name);
-                    }
-                }
-            });
-        });
-
-        // -- Channel strip (one channel per chain node, in signal order) --
-        ui.add_space(8.0);
-        theme::card(ui.style()).show(ui, |ui| {
-            ui.label(RichText::new("CHANNEL STRIP").color(theme::CYAN).strong());
+            // -- Channel strip: one module per chain node, in signal order --
+            ui.add_space(14.0);
             let ids: Vec<NodeId> = self
                 .graph
                 .exec_order()
                 .into_iter()
                 .filter(|id| !matches!(self.graph.kind_of(*id), Some(NodeKind::Input) | Some(NodeKind::Output)))
                 .collect();
-            if ids.is_empty() {
-                ui.label(RichText::new("empty chain - add nodes in the Nodes tab").color(theme::MUTED).small());
-            }
-            egui::ScrollArea::horizontal().show(ui, |ui| {
-                ui.horizontal_top(|ui| {
-                    for id in ids {
-                        self.channel(ui, id);
-                    }
+            hw::rack_panel(ui, "CHANNEL STRIP", theme::CYAN, |ui| {
+                if ids.is_empty() {
+                    hw::silk_label(ui, "empty chain - add nodes in the Nodes tab", 11.0);
+                }
+                egui::ScrollArea::horizontal().id_salt("strip").show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        for id in ids {
+                            self.channel(ui, id);
+                        }
+                    });
+                    ui.add_space(6.0);
                 });
             });
+            ui.add_space(8.0);
         });
     }
 
-    /// One mixer channel for a chain node: name (→ select in Nodes), enable,
-    /// and its primary parameter.
+    /// One channel module for a chain node: name plate (click to edit in
+    /// Nodes), on and solo buttons, and its main control as a knob.
     fn channel(&mut self, ui: &mut egui::Ui, id: NodeId) {
         let Some(node) = self.graph.node(id).cloned() else { return };
         let accent = node_accent(node.params.kind());
-        theme::card(ui.style()).show(ui, |ui| {
-            ui.set_width(132.0);
-            ui.push_id(id, |ui| {
-                ui.vertical(|ui| {
-                    if ui
-                        .add(egui::Button::new(RichText::new(node_label(&node.params)).color(accent).strong()).frame(false))
-                        .on_hover_text(format!("{}\n\nClick to edit this node in the Nodes tab.", kind_help(node.params.kind())))
-                        .clicked()
-                    {
+        let label = node_label(&node.params).to_uppercase();
+        ui.push_id(id, |ui| {
+            hw::faceplate(ui, None, accent, |ui| {
+                ui.set_width(104.0);
+                ui.set_min_height(212.0);
+                ui.vertical_centered(|ui| {
+                    let name = ui
+                        .add(egui::Label::new(RichText::new(&label).color(accent).strong().size(12.5)).sense(Sense::click()).truncate())
+                        .on_hover_text(format!("{}\n\nClick to edit this node in the Nodes tab.", kind_help(node.params.kind())));
+                    if name.clicked() {
                         self.selected = Some(id);
                         self.tab = Tab::Nodes;
                     }
-                    ui.horizontal(|ui| {
-                        let mut on = !node.bypass;
-                        if ui.checkbox(&mut on, "on").changed() {
-                            if let Some(n) = self.graph.node_mut(id) {
-                                n.bypass = !on;
-                            }
+                    ui.add_space(4.0);
+                    if hw::led_toggle_named(ui, "ON", &format!("{} on", node_label(&node.params)), !node.bypass, theme::GOOD, 104.0).on_hover_text("Switch this node in or out of the chain.").clicked() {
+                        if let Some(n) = self.graph.node_mut(id) {
+                            n.bypass = !n.bypass;
                         }
-                        if ui
-                            .selectable_label(node.solo, RichText::new("solo").color(if node.solo { theme::EMBER } else { theme::MUTED }))
-                            .on_hover_text("Hear only this node's output, to audition it in isolation.")
-                            .clicked()
-                        {
-                            self.graph.set_solo(id, !node.solo);
-                        }
-                    });
+                    }
+                    if hw::led_toggle_named(ui, "SOLO", &format!("{} solo", node_label(&node.params)), node.solo, theme::EMBER, 104.0)
+                        .on_hover_text("Hear only this node's output, to audition it in isolation.")
+                        .clicked()
+                    {
+                        self.graph.set_solo(id, !node.solo);
+                    }
+                    ui.add_space(8.0);
+
                     let mut params = node.params.clone();
-                    let mut changed = primary_slider(ui, &mut params);
+                    let mut changed = false;
+                    match crate::controls::primary_knob(&mut params) {
+                        Some((value, spec, help)) => {
+                            changed |= hw::knob(ui, value, &spec, accent, 70.0).on_hover_text(help).changed();
+                        }
+                        None => {
+                            ui.add_space(40.0);
+                            let hint = if matches!(params, NodeParams::Vst3 { .. }) { "edit in Nodes" } else { "no controls" };
+                            hw::silk_label(ui, hint, 10.5);
+                        }
+                    }
                     // The gate's lookahead is tuned often, so expose it here too.
                     if let NodeParams::Gate { lookahead_ms, .. } = &mut params {
-                        changed |= ui
-                            .add(egui::Slider::new(lookahead_ms, 0.0..=40.0).text("look"))
-                            .on_hover_text("Lookahead (ms): opens the gate just before a word starts so onsets aren't clipped. 10-15 is a good balance.")
+                        let spec = hw::KnobSpec {
+                            label: "look",
+                            min: 0.0,
+                            max: 40.0,
+                            default: 10.0,
+                            log: false,
+                            bipolar: false,
+                            unit: "ms",
+                            decimals: 0,
+                        };
+                        changed |= hw::knob(ui, lookahead_ms, &spec, accent, 52.0)
+                            .on_hover_text("Lookahead: opens the gate just before a word starts so onsets aren't clipped. 10-15 ms is a good balance.")
                             .changed();
                     }
                     if changed {
@@ -911,6 +955,7 @@ impl FormantApp {
                 });
             });
         });
+        ui.add_space(4.0);
     }
 
     fn tab_nodes(&mut self, ui: &mut egui::Ui) {
@@ -920,13 +965,13 @@ impl FormantApp {
             .resizable(true)
             .default_size(280.0)
             .size_range(220.0..=520.0)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| self.draw_inspector(ui));
             });
         // The graph canvas fills whatever space is left.
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let size = ui.available_size();
             let (canvas, bg) = ui.allocate_exact_size(size, Sense::click_and_drag());
             self.draw_canvas(ui, canvas, bg);
@@ -1055,25 +1100,11 @@ impl FormantApp {
 
             let selected = self.selected == Some(id);
             let accent = node_accent(kind);
-            let r6 = CornerRadius::same((8.0 * zoom) as u8);
-
-            painter.rect_filled(rect.translate(Vec2::new(0.0, 3.0 * zoom)), r6, Color32::from_black_alpha(80));
-            painter.rect_filled(rect, r6, if selected { theme::CARD_HI } else { theme::CARD });
-            let strip = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 6.0 * zoom));
-            let sr = (8.0 * zoom) as u8;
-            painter.rect_filled(strip, CornerRadius { nw: sr, ne: sr, sw: 0, se: 0 }, accent.gamma_multiply(if bypass { 0.3 } else { 0.95 }));
-            let border = if selected {
-                accent
-            } else if resp.hovered() {
-                theme::lerp(theme::LINE, accent, 0.6)
-            } else {
-                theme::LINE
-            };
-            painter.rect_stroke(rect, r6, Stroke::new(if selected { 2.0 } else { 1.0 }, border), StrokeKind::Inside);
+            hw::module_box(&painter, rect, zoom, accent, selected, resp.hovered(), bypass);
 
             let title_col = if bypass { theme::MUTED } else { theme::TEXT };
             let label = labels.get(&id).cloned().unwrap_or_else(|| kind.label().to_string());
-            painter.text(rect.min + Vec2::new(13.0 * zoom, 16.0 * zoom), Align2::LEFT_TOP, label, FontId::proportional(15.0 * zoom), title_col);
+            hw::silk_text(&painter, rect.min + Vec2::new(13.0 * zoom, 16.0 * zoom), Align2::LEFT_TOP, &label, 15.0 * zoom, title_col);
             let sub = if bypass {
                 Some(("bypassed", theme::EMBER))
             } else if kind == NodeKind::Vst3 {
@@ -1085,21 +1116,17 @@ impl FormantApp {
                 painter.text(rect.min + Vec2::new(13.0 * zoom, 40.0 * zoom), Align2::LEFT_TOP, s, FontId::proportional(10.0 * zoom), c);
             }
 
-            let pr = 7.0 * zoom;
-            let pin = 5.0 * zoom;
             let hit = Vec2::splat(18.0 * zoom);
             if kind != NodeKind::Input {
                 let p = rect.left_center();
-                painter.circle_filled(p, pr, theme::BG);
-                painter.circle_filled(p, pin, theme::EMBER);
+                hw::jack(&painter, p, zoom, theme::EMBER);
                 if ui.interact(Rect::from_center_size(p, hit), egui::Id::new(("fmt_in", id)), Sense::click()).clicked() {
                     self.graph.disconnect_into(id);
                 }
             }
             if kind != NodeKind::Output {
                 let p = rect.right_center();
-                painter.circle_filled(p, pr, theme::BG);
-                painter.circle_filled(p, pin, theme::CYAN);
+                hw::jack(&painter, p, zoom, theme::CYAN);
                 if ui.interact(Rect::from_center_size(p, hit), egui::Id::new(("fmt_out", id)), Sense::drag()).drag_started() {
                     self.dragging_from = Some(id);
                 }
@@ -1216,156 +1243,9 @@ impl FormantApp {
                 }
             });
 
+            let accent = node_accent(params.kind());
+            if crate::controls::draw(ui, &mut params, accent).is_none() {
             match &mut params {
-                NodeParams::HighPass { cutoff_hz, steep } => {
-                    ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("cutoff Hz"))
-                        .on_hover_text("Frequencies below this are removed. ~80-120 Hz clears rumble without thinning your voice.");
-                    ui.checkbox(steep, "steep (24 dB/oct)")
-                        .on_hover_text("Twice as sharp a cutoff, so rumble just below the cutoff is actually gone instead of merely quieter. Leave this on unless you want a gentler, more gradual roll-off.");
-                }
-                NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms } => {
-                    ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("threshold dB"))
-                        .on_hover_text("How loud you must be for the gate to open. Set it just above your background noise.");
-                    ui.add(egui::Slider::new(range_db, -90.0..=0.0).text("range dB"))
-                        .on_hover_text("How much the mic is quieted when closed. More negative = closer to fully silent.");
-                    ui.add(egui::Slider::new(attack_ms, 0.1..=50.0).text("attack ms"))
-                        .on_hover_text("How quickly the gate opens when you start talking.");
-                    ui.add(egui::Slider::new(hold_ms, 0.0..=500.0).text("hold ms"))
-                        .on_hover_text("How long it stays open after you stop, so word endings aren't cut off.");
-                    ui.add(egui::Slider::new(release_ms, 5.0..=1000.0).logarithmic(true).text("release ms"))
-                        .on_hover_text("How slowly the gate closes after the hold - longer is more natural.");
-                    ui.add(egui::Slider::new(lookahead_ms, 0.0..=40.0).text("lookahead ms"))
-                        .on_hover_text("Delays the audio slightly so the gate can open before the start of a word, instead of clipping it. Higher preserves more onset but adds that much latency. 10-15 ms is a good balance.");
-                    ui.checkbox(vad_gate, "follow VAD (RNNoise)")
-                        .on_hover_text("Open the gate from AI voice detection instead of raw loudness.");
-                }
-                NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db } => {
-                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("threshold dB"))
-                        .on_hover_text("How loud sibilance must be before it's tamed. Lower = more de-essing.");
-                    ui.add(egui::Slider::new(ratio, 1.0..=12.0).text("ratio"))
-                        .on_hover_text("How hard the 'ess' is reduced once over threshold.");
-                    ui.add(egui::Slider::new(split_hz, 3000.0..=12000.0).text("center Hz"))
-                        .on_hover_text("Where your 'ess'/'sh' sounds sit (try 5-8 kHz). Only a band around this is touched, so the air above it stays open.");
-                    ui.add(egui::Slider::new(range_db, 0.0..=24.0).text("range dB"))
-                        .on_hover_text("The most this can ever pull the sibilance down. A cap stops a hard 'sss' from punching a hole in the sound.");
-                }
-                NodeParams::Compressor { threshold_db, ratio, knee_db, attack_ms, release_ms, makeup_db, mix } => {
-                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("threshold dB"))
-                        .on_hover_text("Level above which compression kicks in. Lower = more of your voice gets evened out.");
-                    ui.add(egui::Slider::new(ratio, 1.0..=20.0).text("ratio"))
-                        .on_hover_text("How hard loud parts are turned down. 3:1 means 3 dB over → 1 dB out.");
-                    ui.add(egui::Slider::new(knee_db, 0.0..=24.0).text("knee dB"))
-                        .on_hover_text("How gradually compression eases in around the threshold. Wider is smoother and harder to hear working; zero switches on at a hard corner.");
-                    ui.add(egui::Slider::new(attack_ms, 0.5..=100.0).logarithmic(true).text("attack ms"))
-                        .on_hover_text("How fast it clamps down. Slower lets the front of each word punch through.");
-                    ui.add(egui::Slider::new(release_ms, 20.0..=1000.0).logarithmic(true).text("release ms"))
-                        .on_hover_text("How fast it lets go afterwards. Too fast pumps, too slow ducks the words that follow.");
-                    ui.add(egui::Slider::new(makeup_db, -12.0..=24.0).text("makeup dB"))
-                        .on_hover_text("Volume added back after compressing, to match the level you started with.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend of compressed and untouched signal. Below 1 this is parallel compression: the loud parts are controlled while the quiet detail stays natural.");
-                }
-                NodeParams::Eq { low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz } => {
-                    ui.add(egui::Slider::new(low_db, -12.0..=12.0).text("low dB"))
-                        .on_hover_text("Boost (+) or cut (-) the low end / warmth.");
-                    ui.add(egui::Slider::new(low_hz, 40.0..=500.0).logarithmic(true).text("low Hz"))
-                        .on_hover_text("Where the low shelf takes effect. Lower for weight, higher to cut boxiness.");
-                    ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid dB"))
-                        .on_hover_text("Boost (+) or cut (-) the mids / presence.");
-                    ui.add(egui::Slider::new(mid_hz, 200.0..=8000.0).logarithmic(true).text("mid Hz"))
-                        .on_hover_text("Where the mid bell sits. Boxiness usually lives around 300-500 Hz, presence around 3-5 kHz.");
-                    ui.add(egui::Slider::new(mid_q, 0.3..=8.0).logarithmic(true).text("mid Q"))
-                        .on_hover_text("How wide the mid bell is. High Q is surgical, low Q is broad and gentle.");
-                    ui.add(egui::Slider::new(high_db, -12.0..=12.0).text("high dB"))
-                        .on_hover_text("Boost (+) or cut (-) the highs / air.");
-                    ui.add(egui::Slider::new(high_hz, 2000.0..=16000.0).logarithmic(true).text("high Hz"))
-                        .on_hover_text("Where the high shelf takes effect.");
-                }
-                NodeParams::Saturator { drive, mix } => {
-                    ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive"))
-                        .on_hover_text("How hard the signal is pushed - more = warmer, then grittier.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend between clean (0) and saturated (1).");
-                }
-                NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants }
-                | NodeParams::PitchShift { pitch_semitones, formant_semitones, mix, preserve_formants } => {
-                    ui.add(egui::Slider::new(pitch_semitones, -12.0..=12.0).text("pitch"))
-                        .on_hover_text("Shift your pitch up or down in semitones (12 = one octave).");
-                    ui.checkbox(preserve_formants, "preserve formants")
-                        .on_hover_text("Keep your natural vocal character when shifting pitch (no chipmunk). Turn off for the classic sped-up/slowed-down sound.");
-                    ui.add(egui::Slider::new(formant_semitones, -12.0..=12.0).text("formant"))
-                        .on_hover_text("Shift the vocal-tract character on its own. Up sounds smaller/younger, down sounds bigger.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend between your dry voice (0) and the shifted voice (1). Use less than 1 to layer a harmony under your voice.");
-                }
-                NodeParams::Autotune { key, scale, strength, speed_ms, ref_a } => {
-                    use formant_core::dsp::autotune::NOTE_NAMES;
-                    ui.horizontal(|ui| {
-                        ui.label("key");
-                        egui::ComboBox::from_id_salt("at-key")
-                            .selected_text(NOTE_NAMES[(*key as usize) % 12])
-                            .show_ui(ui, |ui| {
-                                for (i, name) in NOTE_NAMES.iter().enumerate() {
-                                    ui.selectable_value(key, i as u8, *name);
-                                }
-                            });
-                        egui::ComboBox::from_id_salt("at-scale")
-                            .selected_text(scale.label())
-                            .show_ui(ui, |ui| {
-                                for s in formant_core::dsp::Scale::ALL {
-                                    ui.selectable_value(scale, s, s.label());
-                                }
-                            });
-                    });
-                    ui.add(egui::Slider::new(strength, 0.0..=1.0).text("strength"))
-                        .on_hover_text("How hard notes are pulled to the scale. 1.0 is a full snap (the hard robotic sound); lower is gentle correction.");
-                    ui.add(egui::Slider::new(speed_ms, 1.0..=300.0).logarithmic(true).text("speed ms"))
-                        .on_hover_text("How fast the pitch glides to the target. Fast (a few ms) is the classic autotune effect; slow (100+ ms) sounds natural.");
-                    ui.add(egui::Slider::new(ref_a, 430.0..=450.0).text("reference A"))
-                        .on_hover_text("Tuning reference for A4 (default 440 Hz).");
-                    ui.label(RichText::new("formants preserved automatically").color(theme::MUTED).small())
-                        .on_hover_text("Correction works on grains of your actual waveform, so your vocal character comes along for free. There's no setting to get wrong.");
-                }
-                NodeParams::Reverb { room_size, damping, mix } => {
-                    ui.add(egui::Slider::new(room_size, 0.0..=1.0).text("room"))
-                        .on_hover_text("Size of the space - bigger means a longer tail.");
-                    ui.add(egui::Slider::new(damping, 0.0..=1.0).text("damping"))
-                        .on_hover_text("How quickly the highs fade in the tail.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend between dry (0) and reverberant (1).");
-                }
-                NodeParams::Delay { time_ms, feedback, mix } => {
-                    ui.add(egui::Slider::new(time_ms, 20.0..=1000.0).text("time ms"))
-                        .on_hover_text("Echo spacing in milliseconds.");
-                    ui.add(egui::Slider::new(feedback, 0.0..=0.95).text("feedback"))
-                        .on_hover_text("How much the echo feeds back - higher means more repeats.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend between dry (0) and echoed (1).");
-                }
-                NodeParams::Chorus { depth_ms, rate_hz, mix } => {
-                    ui.add(egui::Slider::new(depth_ms, 0.0..=15.0).text("depth ms"))
-                        .on_hover_text("How wide the pitch wobble swings - more is lusher.");
-                    ui.add(egui::Slider::new(rate_hz, 0.05..=8.0).text("rate Hz"))
-                        .on_hover_text("Speed of the wobble.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend between dry (0) and chorused (1).");
-                }
-                NodeParams::Limiter { ceiling_db, lookahead_ms, release_ms } => {
-                    ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceiling dB"))
-                        .on_hover_text("Maximum output level - nothing gets louder than this.");
-                    ui.add(egui::Slider::new(lookahead_ms, 0.2..=10.0).text("lookahead ms"))
-                        .on_hover_text("How far ahead it looks so it can turn down before a peak instead of clipping it. More is cleaner on plosives and costs that much delay.");
-                    ui.add(egui::Slider::new(release_ms, 10.0..=500.0).logarithmic(true).text("release ms"))
-                        .on_hover_text("How quickly the level comes back after a peak. Faster is louder, slower is smoother.");
-                }
-                NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } => {
-                    ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("gain dB"))
-                        .on_hover_text("Volume adjustment in decibels (+ louder, - quieter).");
-                }
-                NodeParams::Mix { gain_db } => {
-                    ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("output dB"))
-                        .on_hover_text("Output trim after summing every wire feeding this node.");
-                }
                 NodeParams::Vst3 { name, params: stored, .. } => {
                     ui.label(RichText::new(name.as_str()).color(theme::MUTED));
                     if self.editors.contains_key(&id)
@@ -1416,8 +1296,10 @@ impl FormantApp {
                         }
                     }
                 }
-                NodeParams::Denoise | NodeParams::Input | NodeParams::Output => {
-                    ui.label(RichText::new("no parameters").color(theme::MUTED).small());
+                    NodeParams::Denoise | NodeParams::Input | NodeParams::Output => {
+                        ui.label(RichText::new("no parameters").color(theme::MUTED).small());
+                    }
+                    _ => {}
                 }
             }
 
@@ -1446,11 +1328,11 @@ impl FormantApp {
     }
 
     fn tab_setup(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(4.0);
             // -- Presets --------------------------------------------------
-            theme::card(ui.style()).show(ui, |ui| {
+            hw::rack_panel(ui, "PRESETS", theme::EMBER, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("PRESETS").color(theme::CYAN).strong());
                     if ui.button("Refresh").clicked() {
                         self.presets = Preset::load_all();
                     }
@@ -1503,9 +1385,8 @@ impl FormantApp {
                 }
             });
 
-            ui.add_space(8.0);
-            theme::card(ui.style()).show(ui, |ui| {
-                ui.label(RichText::new("DEVICES").color(theme::CYAN).strong());
+            ui.add_space(14.0);
+            hw::rack_panel(ui, "DEVICES", theme::CYAN, |ui| {
                 self.virtual_cable_notice(ui);
                 ui.label(RichText::new(format!("mic now: {}", self.engine.mic_name)).color(theme::MUTED).small());
 
@@ -1580,10 +1461,9 @@ impl FormantApp {
                 });
             });
 
-            ui.add_space(8.0);
-            theme::card(ui.style()).show(ui, |ui| {
+            ui.add_space(14.0);
+            hw::rack_panel(ui, "HOTKEYS", theme::CYAN, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("HOTKEYS").color(theme::CYAN).strong());
                     if ui.button("Reset defaults").clicked() {
                         let d = formant_core::Bindings::default();
                         self.engine.bindings.set(Action::Ptt, d.ptt);
@@ -1600,7 +1480,7 @@ impl FormantApp {
                             ui.colored_label(theme::EMBER, "press a key...  (Esc cancels)");
                         } else {
                             let name = self.engine.bindings.get(action).map(hotkeys::key_name).unwrap_or_else(|| "-".into());
-                            ui.monospace(name);
+                            hw::readout(ui, &name, 110.0);
                         }
                         if ui.button("Rebind").clicked() {
                             self.rebinding = Some(action);
@@ -1613,9 +1493,8 @@ impl FormantApp {
                 }
             });
 
-            ui.add_space(8.0);
-            theme::card(ui.style()).show(ui, |ui| {
-                ui.label(RichText::new("STARTUP").color(theme::CYAN).strong());
+            ui.add_space(14.0);
+            hw::rack_panel(ui, "STARTUP", theme::CYAN, |ui| {
                 let mut autostart = self.autostart_on;
                 if ui
                     .checkbox(&mut autostart, "Start Formant when Windows starts")
@@ -1636,14 +1515,12 @@ impl FormantApp {
                 );
             });
 
-            ui.add_space(8.0);
-            theme::card(ui.style()).show(ui, |ui| {
-                ui.label(RichText::new("ABOUT").color(theme::CYAN).strong());
-                ui.label(
-                    RichText::new(format!("Formant {}", env!("CARGO_PKG_VERSION")))
-                        .color(theme::MUTED)
-                        .small(),
-                );
+            ui.add_space(14.0);
+            hw::rack_panel(ui, "ABOUT", theme::CYAN, |ui| {
+                ui.horizontal(|ui| {
+                    hw::silk_label(ui, "VERSION", 10.5);
+                    hw::readout(ui, env!("CARGO_PKG_VERSION"), 70.0);
+                });
                 ui.horizontal(|ui| {
                     if ui.button("Check for updates").on_hover_text("Opens the Releases page in your browser. Formant never checks on its own.").clicked() {
                         crate::platform::open_url("https://github.com/ABowlOfEleven/Formant/releases");
@@ -1663,58 +1540,18 @@ impl FormantApp {
 }
 
 /// A segmented LED-style level meter (cyan at low, ember toward the top).
-fn meter(ui: &mut egui::Ui, label: &str, frac: f32, help: &str) {
-    let frac = frac.clamp(0.0, 1.0);
-    ui.horizontal(|ui| {
-        ui.add_sized([92.0, 16.0], egui::Label::new(RichText::new(label).color(theme::MUTED).small()))
-            .on_hover_text(help);
-        let segs = 26usize;
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(228.0, 15.0), Sense::hover());
-        resp.on_hover_text(help);
-        let painter = ui.painter();
-        painter.rect_filled(rect, CornerRadius::same(4), theme::BG);
-        let gap = 2.0;
-        let inset = 3.0;
-        let seg_w = (rect.width() - 2.0 * inset - gap * (segs as f32 - 1.0)) / segs as f32;
-        let lit = (frac * segs as f32).ceil() as usize;
-        for i in 0..segs {
-            let x = rect.min.x + inset + i as f32 * (seg_w + gap);
-            let sr = Rect::from_min_size(Pos2::new(x, rect.min.y + inset), Vec2::new(seg_w, rect.height() - 2.0 * inset));
-            let t = i as f32 / (segs as f32 - 1.0);
-            let on = i < lit;
-            let col = if on {
-                theme::lerp(theme::CYAN, theme::EMBER, (t * 1.5 - 0.5).clamp(0.0, 1.0))
-            } else {
-                theme::lerp(theme::BG, theme::LINE, 0.5)
-            };
-            painter.rect_filled(sr, CornerRadius::same(1), col);
-        }
-        ui.label(RichText::new(format!("{:.0}%", frac * 100.0)).small().color(theme::MUTED));
-    });
-}
-
-/// Draw the spectrum analyzer as a row of bars (low frequencies on the left).
-fn spectrum_view(ui: &mut egui::Ui, bands: &[f32]) {
-    let width = ui.available_width().min(620.0);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 64.0), Sense::hover());
-    resp.on_hover_text("Live frequency spectrum of the processed output. Left is low, right is high.");
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, CornerRadius::same(6), theme::BG);
-    let n = bands.len().max(1);
-    let gap = 2.0;
-    let bw = ((rect.width() - gap * (n as f32 + 1.0)) / n as f32).max(1.0);
-    for (i, &v) in bands.iter().enumerate() {
-        let v = v.clamp(0.0, 1.0);
-        let h = v * (rect.height() - 6.0);
-        let x = rect.left() + gap + i as f32 * (bw + gap);
-        let bar = Rect::from_min_max(Pos2::new(x, rect.bottom() - 3.0 - h), Pos2::new(x + bw, rect.bottom() - 3.0));
-        painter.rect_filled(bar, CornerRadius::same(1), theme::lerp(theme::CYAN, theme::EMBER, v));
-    }
-}
-
 /// A pill-style tab button with a clear active state + accent underline.
 fn tab_button(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(94.0, 30.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, format!("{label} tab")));
+    if resp.has_focus() {
+        ui.painter().rect_stroke(
+            rect.expand(2.0),
+            CornerRadius::same(8),
+            Stroke::new(2.0, Color32::from_rgb(120, 230, 255)),
+            egui::StrokeKind::Outside,
+        );
+    }
     let painter = ui.painter();
     let r = CornerRadius::same(7);
     if active {
@@ -1740,47 +1577,33 @@ fn tab_button(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
     resp.clicked()
 }
 
-/// A subtle top-light / bottom-dark gradient behind tab content, for depth.
+/// The dark rack the panels sit in.
 fn paint_backdrop(ui: &egui::Ui) {
-    let rect = ui.max_rect();
-    let painter = ui.painter();
-    let n = 28;
-    for i in 0..n {
-        let t = i as f32 / (n - 1) as f32;
-        let y0 = rect.top() + rect.height() * i as f32 / n as f32;
-        let y1 = rect.top() + rect.height() * (i + 1) as f32 / n as f32;
-        let col = theme::lerp(theme::PANEL, theme::BG, t * 0.55);
-        painter.rect_filled(
-            Rect::from_min_max(Pos2::new(rect.left(), y0), Pos2::new(rect.right(), y1)),
-            0.0,
-            col,
-        );
-    }
+    hw::rack_backdrop(ui.painter(), ui.max_rect());
 }
 
-/// Render a node's primary parameter as a compact slider (mixer channel).
-/// Returns true if it changed.
-fn primary_slider(ui: &mut egui::Ui, params: &mut NodeParams) -> bool {
-    let resp = match params {
-        NodeParams::HighPass { cutoff_hz, .. } => Some(ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("Hz")).on_hover_text("Cutoff - frequencies below this are removed.")),
-        NodeParams::Gate { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("thr")).on_hover_text("Gate threshold - how loud you must be to open the mic.")),
-        NodeParams::DeEsser { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr")).on_hover_text("De-ess threshold - lower tames more sibilance.")),
-        NodeParams::Compressor { threshold_db, .. } => Some(ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("thr")).on_hover_text("Compressor threshold - lower evens out more of your voice.")),
-        NodeParams::Eq { mid_db, .. } => Some(ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid")).on_hover_text("Mid boost/cut (presence).")),
-        NodeParams::Saturator { drive, .. } => Some(ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive")).on_hover_text("Saturation drive - more = warmer/grittier.")),
-        NodeParams::Pitch { pitch_semitones, .. } | NodeParams::PitchShift { pitch_semitones, .. } => Some(ui.add(egui::Slider::new(pitch_semitones, -12.0..=12.0).text("st")).on_hover_text("Pitch shift in semitones.")),
-        NodeParams::Autotune { strength, .. } => Some(ui.add(egui::Slider::new(strength, 0.0..=1.0).text("amt")).on_hover_text("Autotune strength.")),
-        NodeParams::Reverb { mix, .. } | NodeParams::Delay { mix, .. } | NodeParams::Chorus { mix, .. } => Some(ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix")).on_hover_text("Dry/wet blend.")),
-        NodeParams::Limiter { ceiling_db, .. } => Some(ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceil")).on_hover_text("Output ceiling - nothing gets louder than this.")),
-        NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } | NodeParams::Mix { gain_db } => {
-            Some(ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("dB")).on_hover_text("Volume in decibels."))
+/// Spectrum bars for the master screen, low frequencies on the left. Lit bars
+/// glow; the unlit part of each column shows as a faint grid, like a real
+/// segment display.
+fn paint_spectrum(p: &egui::Painter, rect: Rect, bands: &[f32]) {
+    let n = bands.len().max(1);
+    let gap = 2.0;
+    let bw = ((rect.width() - gap * (n as f32 - 1.0)) / n as f32).max(1.0);
+    let top = rect.top() + 44.0; // leave room for the readouts
+    let height = (rect.bottom() - top).max(10.0);
+    for (i, &v) in bands.iter().enumerate() {
+        let v = v.clamp(0.0, 1.0);
+        let x = rect.left() + i as f32 * (bw + gap);
+        let col = theme::lerp(theme::CYAN, theme::EMBER, v);
+        let column = Rect::from_min_max(Pos2::new(x, top), Pos2::new(x + bw, rect.bottom()));
+        p.rect_filled(column, CornerRadius::same(1), theme::lerp(Color32::from_rgb(7, 10, 12), theme::CYAN, 0.05));
+        let h = v * height;
+        if h > 0.5 {
+            let bar = Rect::from_min_max(Pos2::new(x, rect.bottom() - h), Pos2::new(x + bw, rect.bottom()));
+            p.rect_filled(bar.expand(1.0), CornerRadius::same(1), col.gamma_multiply(0.2));
+            p.rect_filled(bar, CornerRadius::same(1), col);
         }
-        _ => {
-            ui.label(RichText::new("-").color(theme::MUTED).small());
-            None
-        }
-    };
-    resp.map(|r| r.changed()).unwrap_or(false)
+    }
 }
 
 /// Plain-language explanation of what each node does (hover tooltip).

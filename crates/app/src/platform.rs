@@ -6,13 +6,13 @@ pub fn is_first_instance() -> bool {
     #[cfg(windows)]
     {
         use windows::core::{HSTRING, PCWSTR};
-        use windows::Win32::Foundation::{CloseHandle, GetLastError, BOOL, ERROR_ALREADY_EXISTS};
+        use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
         use windows::Win32::System::Threading::CreateMutexW;
         let name = HSTRING::from("Local\\FormantSingleInstance");
         // SAFETY: standard named-mutex creation; we intentionally leak the handle
         // on success so the mutex lives until the process exits.
         unsafe {
-            match CreateMutexW(None, BOOL(1), PCWSTR(name.as_ptr())) {
+            match CreateMutexW(None, true, PCWSTR(name.as_ptr())) {
                 Ok(handle) => {
                     if GetLastError() == ERROR_ALREADY_EXISTS {
                         let _ = CloseHandle(handle);

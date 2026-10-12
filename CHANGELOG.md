@@ -3,6 +3,112 @@
 This file records all notable changes to Formant. The format follows Keep a
 Changelog. The project uses semantic versioning.
 
+## [Unreleased]
+
+## [1.0.0]
+
+Formant 1.0. A rebuild of the autotune node, every built-in effect reworked
+with more controls, a new studio-hardware look, screen reader and keyboard
+support, a security pass, and updated dependencies. Existing presets load and
+sound as before, except that the autotune correction is now more accurate.
+
+### Added
+
+- A Humanize control on the autotune node. On notes held longer than about a
+  tenth of a second, the correction relaxes, so long notes keep their natural
+  drift and vibrato. Short notes still snap to pitch. Older presets load with
+  Humanize at 0, which is the old behavior.
+- A test bench for the autotune node (`cargo run --release -p formant-core
+  --example autotune_lab`). It makes test vocals, measures pitch accuracy,
+  warble, wrong notes, clicks and roughness, and writes WAV files to listen to.
+
+### Fixed
+
+- The gate opened at the release speed and closed at the attack speed. With
+  the default settings it took about 120 ms to open, which cut off the
+  start of words.
+
+### Changed
+
+- The target note no longer flips between two notes when you sing near the
+  midpoint between them. The note decision now follows your pitch without
+  vibrato and switches only when the new note is clearly closer. Before this
+  change, a note with vibrato across the midpoint went to the wrong note 43% of
+  the time on the test bench. Now it is 0%.
+- The pitch detector now reports every 1.3 ms instead of every 8 ms. It works
+  on fractions of a sample, so the corrected note lands on pitch instead of up
+  to 8 cents away. It reads voices up to 1100 Hz (was 550 Hz), so high voices
+  are corrected to the correct note.
+- Pitch information now lines up with the audio that is shifted. Before, the
+  shift used a pitch reading from about 25 ms later, which smeared note
+  changes.
+- Grains are placed at their exact fractional positions, and pulse alignment no
+  longer jumps between two peaks. Held notes sound smoother.
+- The autotune node uses about 14 times less CPU.
+- A new look styled after studio hardware. Panels are brushed metal with
+  screws and bevels. Node controls on the Mixer are knobs with LED arcs: drag
+  to turn, hold Shift for fine moves, scroll to nudge, and double-click to
+  reset to the default. Buttons have LEDs, the meters are LED ladders with
+  peak hold, and the spectrum and readouts sit behind glass. The Setup page
+  and the node editor use the same style.
+- A new app icon: a machined knob with an LED arc. The icon file now holds
+  every size from 16 to 256 px, so it stays sharp in the tray and taskbar.
+- Every built-in effect was reworked from published reference designs and
+  expired patents (see `docs/research/effects-references.md`), and all of
+  them gained controls. Older presets load with their old behavior.
+  - Compressor: Clean, FET, Opto and Bus characters, a peak or RMS
+    detector, a sidechain high-pass, auto release and auto make-up.
+  - Gate: an expander mode, a hysteresis control and sidechain filters.
+  - De-esser: split or wideband, absolute or relative detection, band
+    width, and a listen switch.
+  - EQ: four bands, with shelf or bell edges, proportional Q and an output
+    trim.
+  - High-pass: slopes from 6 to 48 dB/oct.
+  - Limiter: drive, auto release and a true-peak switch. The ceiling now
+    holds without clipping.
+  - Saturator: soft, hard, tube and tape types, bias, tone and output, with
+    better anti-aliasing.
+  - Reverb: a plate as well as the room, with pre-delay, modulation and low
+    and high cuts.
+  - Delay: a time control that glides, filtered and saturating repeats,
+    wow and flutter.
+  - Chorus: up to three voices, a base delay, feedback and a high cut.
+- Turning any knob no longer clicks or zippers. Every control glides to its
+  new value, and filters keep their state while they move. An effects test
+  bench (`cargo run --release -p formant-core --example effects_lab`)
+  measures this for each effect.
+- The Nodes inspector shows each effect's controls as knobs and LED buttons.
+- Accessibility:
+  - Screen reader support (AccessKit) is turned on. Every knob, button,
+    meter and display now has a role, a name and a value. For example, a
+    channel's switch is read as "High-pass on" and a knob as "cutoff: 60 Hz".
+  - Knobs work from the keyboard. Click or Tab to a knob, then use the arrow
+    keys to nudge it (hold Shift for fine steps), Page Up or Page Down to
+    jump, Home or End for the limits, and Delete to reset. Focused controls
+    show a ring.
+  - The mouse wheel turns a knob only after you click it. Scrolling a panel
+    no longer changes every knob the pointer passes over.
+  - The dim panel labels meet WCAG AA contrast and are at least 11.5 px.
+- Updated dependencies: eframe/egui 0.36, windows 0.62, ron 0.12, tray-icon
+  0.26, rfd 0.17, json5 1, rtrb 0.4 and winreg 0.56. Saved presets, sessions
+  and settings are unchanged on disk.
+
+### Security
+
+- Formant loads VST3 plugins only from the standard VST3 folders. Before, a
+  preset could name any DLL on the computer or on a network share, and
+  loading the preset ran it. Plugins installed the normal way are not
+  affected.
+- Presets and the saved session that contain NaN or infinite numbers are
+  refused. Before, one such value could crash audio processing or send noise
+  to the output. As a second guard, the output never sends a NaN or infinite
+  sample to the device.
+- Gate and limiter lookahead from a preset is limited to the supported range,
+  and a preset can hold at most 256 nodes.
+- Importing a preset never replaces a preset that you already have. It gets a
+  free name such as "Name (imported)", and save errors are shown.
+- An audio device without a name no longer crashes the device list.
+
 ## [0.4.0]
 
 A quality pass over the whole signal chain. Existing presets and sessions
