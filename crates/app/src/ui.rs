@@ -610,7 +610,7 @@ impl eframe::App for FormantApp {
             self.spectrum.update(&self.scope_buf);
         }
         self.tick_calibration();
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             paint_backdrop(ui);
             match self.tab {
                 Tab::Mixer => self.tab_mixer(ui),
@@ -661,7 +661,7 @@ impl FormantApp {
         let needs_cable = !self.render_devices.is_empty()
             && formant_audio::devices::detect_cable(&self.render_devices).is_none();
         let audio_lost = self.engine.device_lost();
-        egui::Panel::top("top").show_inside(ui, |ui| {
+        egui::Panel::top("top").show(ui, |ui| {
             let strip = ui.painter().add(egui::Shape::Noop);
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -950,13 +950,13 @@ impl FormantApp {
             .resizable(true)
             .default_size(280.0)
             .size_range(220.0..=520.0)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| self.draw_inspector(ui));
             });
         // The graph canvas fills whatever space is left.
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let size = ui.available_size();
             let (canvas, bg) = ui.allocate_exact_size(size, Sense::click_and_drag());
             self.draw_canvas(ui, canvas, bg);
