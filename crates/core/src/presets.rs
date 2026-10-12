@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
+use crate::dsp::compressor::{Character, Detector};
 use crate::graph::{Graph, NodeKind, NodeParams};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -184,7 +185,20 @@ fn comp(
     makeup_db: f32,
     mix: f32,
 ) -> NodeParams {
-    NodeParams::Compressor { threshold_db, ratio, knee_db, attack_ms, release_ms, makeup_db, mix }
+    NodeParams::Compressor {
+        threshold_db,
+        ratio,
+        knee_db,
+        attack_ms,
+        release_ms,
+        makeup_db,
+        mix,
+        detector: Detector::Rms,
+        sc_hpf_hz: 80.0,
+        auto_release: false,
+        auto_makeup: false,
+        character: Character::Clean,
+    }
 }
 
 fn deess(threshold_db: f32, ratio: f32, split_hz: f32, range_db: f32) -> NodeParams {
@@ -284,7 +298,8 @@ mod tests {
     /// Every shipped preset has to be a working chain, not just valid data.
     #[test]
     fn factory_presets_process_audio_cleanly() {
-        use crate::graph::GraphProcessor;
+        use crate::dsp::compressor::{Character, Detector};
+use crate::graph::GraphProcessor;
         for preset in Preset::factory() {
             let mut proc = GraphProcessor::new(&preset.graph);
             let input: Vec<f32> = (0..4800)
@@ -312,7 +327,8 @@ mod tests {
     /// well past it.
     #[test]
     fn factory_presets_hold_their_ceiling_when_slammed() {
-        use crate::graph::GraphProcessor;
+        use crate::dsp::compressor::{Character, Detector};
+use crate::graph::GraphProcessor;
         for preset in Preset::factory() {
             let mut proc = GraphProcessor::new(&preset.graph);
             let input: Vec<f32> = (0..4800).map(|n| 0.99 * (n as f32 * 0.07).sin()).collect();
@@ -333,7 +349,8 @@ mod tests {
 
     #[test]
     fn vst_param_values_persist() {
-        use crate::graph::{Graph, NodeParams};
+        use crate::dsp::compressor::{Character, Detector};
+use crate::graph::{Graph, NodeParams};
         let mut g = Graph::default_chain();
         let id = g.add_node(
             NodeParams::Vst3 {

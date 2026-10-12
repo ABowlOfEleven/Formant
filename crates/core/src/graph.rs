@@ -19,6 +19,7 @@ use crate::dsp::{
     Autotune, Chorus, Compressor, DeEsser, Delay, Denoise, Eq, Gate, HighPass, Limiter,
     PitchShifter, Reverb, Saturator, Scale, SmoothedGain,
 };
+use crate::dsp::compressor::{Character, CompressorSettings, Detector};
 use crate::engine::GateOverride;
 use crate::types::Sample;
 use crate::SAMPLE_RATE;
@@ -86,6 +87,20 @@ fn default_limiter_release() -> f32 {
 
 // Gate and de-esser defaults. Presets from before these fields existed load
 // with the same values a freshly added node gets.
+
+/// The compressor DSP settings for a `NodeParams::Compressor`.
+fn comp_settings(p: &NodeParams) -> CompressorSettings {
+    match *p {
+        NodeParams::Compressor {
+            threshold_db, ratio, knee_db, attack_ms, release_ms, makeup_db, mix,
+            detector, sc_hpf_hz, auto_release, auto_makeup, character,
+        } => CompressorSettings {
+            threshold_db, ratio, knee_db, attack_ms, release_ms, makeup_db, mix,
+            detector, sc_hpf_hz, auto_release, auto_makeup, character,
+        },
+        _ => CompressorSettings::default(),
+    }
+}
 
 /// Effective high-pass slope: an explicit `slope_db`, or the legacy `steep`
 /// switch (24 or 12 dB/oct) for presets saved before slopes existed.
@@ -252,6 +267,11 @@ impl NodeKind {
                 release_ms: 120.0,
                 makeup_db: 0.0,
                 mix: 1.0,
+                detector: Detector::Rms,
+                sc_hpf_hz: 80.0,
+                auto_release: false,
+                auto_makeup: false,
+                character: Character::Clean,
             },
             NodeKind::Eq => NodeParams::Eq {
                 low_db: 0.0,
@@ -366,6 +386,18 @@ pub enum NodeParams {
         /// Blend back toward dry: below 1.0 this is parallel compression.
         #[serde(default = "default_full_mix")]
         mix: f32,
+        /// Older presets used RMS detection, no sidechain filter, a fixed
+        /// release and manual make-up, so those are the load defaults.
+        #[serde(default)]
+        detector: Detector,
+        #[serde(default)]
+        sc_hpf_hz: f32,
+        #[serde(default)]
+        auto_release: bool,
+        #[serde(default)]
+        auto_makeup: bool,
+        #[serde(default)]
+        character: Character,
     },
     Eq {
         low_db: f32,
@@ -737,6 +769,11 @@ impl Graph {
                 release_ms: 120.0,
                 makeup_db: 0.0,
                 mix: 1.0,
+                detector: Detector::Peak,
+                sc_hpf_hz: 100.0,
+                auto_release: true,
+                auto_makeup: false,
+                character: Character::Fet,
             },
             [690.0, 240.0],
         );
@@ -853,24 +890,9 @@ impl NodeProc {
             NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db } => {
                 NodeProc::DeEsser(DeEsser::new(SAMPLE_RATE, split_hz, threshold_db, ratio, range_db))
             }
-            NodeParams::Compressor {
-                threshold_db,
-                ratio,
-                knee_db,
-                attack_ms,
-                release_ms,
-                makeup_db,
-                mix,
-            } => NodeProc::Compressor(Compressor::new(
-                SAMPLE_RATE,
-                threshold_db,
-                ratio,
-                knee_db,
-                attack_ms,
-                release_ms,
-                makeup_db,
-                mix,
-            )),
+            NodeParams::Compressor { .. } => {
+                NodeProc::Compressor(Compressor::new(SAMPLE_RATE, comp_settings(params)))
+            }
             NodeParams::Eq { low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz } => {
                 NodeProc::Eq(Eq::new(
                     SAMPLE_RATE, low_db, low_hz, mid_db, mid_hz, mid_q, high_db, high_hz,
@@ -954,20 +976,10 @@ impl NodeProc {
             ) => {
                 d.configure(*split_hz, *threshold_db, *ratio, *range_db);
             }
-            (
-                NodeProc::Compressor(c),
-                NodeParams::Compressor {
-                    threshold_db,
-                    ratio,
-                    knee_db,
-                    attack_ms,
-                    release_ms,
-                    makeup_db,
-                    mix,
-                },
-            ) => {
-                c.configure(*threshold_db, *ratio, *knee_db, *attack_ms, *release_ms, *makeup_db, *mix);
+            (NodeProc::Compressor(c), p @ NodeParams::Compressor { .. }) => {
+                c.configure(comp_settings(p));
             }
+
             (
                 NodeProc::Eq(eq),
                 NodeParams::Eq { low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz },
@@ -1470,8 +1482,15 @@ mod tests {
             ref other => panic!("wrong node: {other:?}"),
         }
         match g.node(4).unwrap().params {
-            NodeParams::Compressor { threshold_db, ratio, knee_db, attack_ms, release_ms, makeup_db, mix } => {
+            NodeParams::Compressor {
+                threshold_db, ratio, knee_db, attack_ms, release_ms, makeup_db, mix,
+                detector, sc_hpf_hz, auto_release, auto_makeup, character,
+            } => {
                 assert_eq!((threshold_db, ratio), (-18.0, 3.0));
+                assert_eq!(detector, Detector::Rms, "older compressors used RMS detection");
+                assert_eq!(sc_hpf_hz, 0.0, "older compressors had no sidechain filter");
+                assert!(!auto_release && !auto_makeup);
+                assert_eq!(character, Character::Clean);
                 assert_eq!(knee_db, default_knee());
                 assert_eq!(attack_ms, default_comp_attack());
                 assert_eq!(release_ms, default_comp_release());

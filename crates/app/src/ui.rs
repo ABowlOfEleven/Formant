@@ -1228,168 +1228,9 @@ impl FormantApp {
                 }
             });
 
+            let accent = node_accent(params.kind());
+            if crate::controls::draw(ui, &mut params, accent).is_none() {
             match &mut params {
-                NodeParams::HighPass { cutoff_hz, steep, slope_db } => {
-                    ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("cutoff Hz"))
-                        .on_hover_text("Frequencies below this are removed. ~80-120 Hz clears rumble without thinning your voice.");
-                    let mut slope = formant_core::graph::hpf_slope(*steep, *slope_db);
-                    egui::ComboBox::from_label("slope")
-                        .selected_text(format!("{slope} dB/oct"))
-                        .show_ui(ui, |ui| {
-                            for s in formant_core::dsp::highpass::SLOPES {
-                                ui.selectable_value(&mut slope, s, format!("{s} dB/oct"));
-                            }
-                        })
-                        .response
-                        .on_hover_text("How sharply frequencies below the cutoff are removed. 12 is gentle and natural; 18 is the classic console filter; 24 and up clear rumble just below the cutoff completely.");
-                    *slope_db = slope;
-                    *steep = slope >= 24;
-                }
-                NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms } => {
-                    ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("threshold dB"))
-                        .on_hover_text("How loud you must be for the gate to open. Set it just above your background noise.");
-                    ui.add(egui::Slider::new(range_db, -90.0..=0.0).text("range dB"))
-                        .on_hover_text("How much the mic is quieted when closed. More negative = closer to fully silent.");
-                    ui.add(egui::Slider::new(attack_ms, 0.1..=50.0).text("attack ms"))
-                        .on_hover_text("How quickly the gate opens when you start talking.");
-                    ui.add(egui::Slider::new(hold_ms, 0.0..=500.0).text("hold ms"))
-                        .on_hover_text("How long it stays open after you stop, so word endings aren't cut off.");
-                    ui.add(egui::Slider::new(release_ms, 5.0..=1000.0).logarithmic(true).text("release ms"))
-                        .on_hover_text("How slowly the gate closes after the hold - longer is more natural.");
-                    ui.add(egui::Slider::new(lookahead_ms, 0.0..=40.0).text("lookahead ms"))
-                        .on_hover_text("Delays the audio slightly so the gate can open before the start of a word, instead of clipping it. Higher preserves more onset but adds that much latency. 10-15 ms is a good balance.");
-                    ui.checkbox(vad_gate, "follow VAD (RNNoise)")
-                        .on_hover_text("Open the gate from AI voice detection instead of raw loudness.");
-                }
-                NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db } => {
-                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("threshold dB"))
-                        .on_hover_text("How loud sibilance must be before it's tamed. Lower = more de-essing.");
-                    ui.add(egui::Slider::new(ratio, 1.0..=12.0).text("ratio"))
-                        .on_hover_text("How hard the 'ess' is reduced once over threshold.");
-                    ui.add(egui::Slider::new(split_hz, 3000.0..=12000.0).text("center Hz"))
-                        .on_hover_text("Where your 'ess'/'sh' sounds sit (try 5-8 kHz). Only a band around this is touched, so the air above it stays open.");
-                    ui.add(egui::Slider::new(range_db, 0.0..=24.0).text("range dB"))
-                        .on_hover_text("The most this can ever pull the sibilance down. A cap stops a hard 'sss' from punching a hole in the sound.");
-                }
-                NodeParams::Compressor { threshold_db, ratio, knee_db, attack_ms, release_ms, makeup_db, mix } => {
-                    ui.add(egui::Slider::new(threshold_db, -60.0..=0.0).text("threshold dB"))
-                        .on_hover_text("Level above which compression kicks in. Lower = more of your voice gets evened out.");
-                    ui.add(egui::Slider::new(ratio, 1.0..=20.0).text("ratio"))
-                        .on_hover_text("How hard loud parts are turned down. 3:1 means 3 dB over → 1 dB out.");
-                    ui.add(egui::Slider::new(knee_db, 0.0..=24.0).text("knee dB"))
-                        .on_hover_text("How gradually compression eases in around the threshold. Wider is smoother and harder to hear working; zero switches on at a hard corner.");
-                    ui.add(egui::Slider::new(attack_ms, 0.5..=100.0).logarithmic(true).text("attack ms"))
-                        .on_hover_text("How fast it clamps down. Slower lets the front of each word punch through.");
-                    ui.add(egui::Slider::new(release_ms, 20.0..=1000.0).logarithmic(true).text("release ms"))
-                        .on_hover_text("How fast it lets go afterwards. Too fast pumps, too slow ducks the words that follow.");
-                    ui.add(egui::Slider::new(makeup_db, -12.0..=24.0).text("makeup dB"))
-                        .on_hover_text("Volume added back after compressing, to match the level you started with.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend of compressed and untouched signal. Below 1 this is parallel compression: the loud parts are controlled while the quiet detail stays natural.");
-                }
-                NodeParams::Eq { low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz } => {
-                    ui.add(egui::Slider::new(low_db, -12.0..=12.0).text("low dB"))
-                        .on_hover_text("Boost (+) or cut (-) the low end / warmth.");
-                    ui.add(egui::Slider::new(low_hz, 40.0..=500.0).logarithmic(true).text("low Hz"))
-                        .on_hover_text("Where the low shelf takes effect. Lower for weight, higher to cut boxiness.");
-                    ui.add(egui::Slider::new(mid_db, -12.0..=12.0).text("mid dB"))
-                        .on_hover_text("Boost (+) or cut (-) the mids / presence.");
-                    ui.add(egui::Slider::new(mid_hz, 200.0..=8000.0).logarithmic(true).text("mid Hz"))
-                        .on_hover_text("Where the mid bell sits. Boxiness usually lives around 300-500 Hz, presence around 3-5 kHz.");
-                    ui.add(egui::Slider::new(mid_q, 0.3..=8.0).logarithmic(true).text("mid Q"))
-                        .on_hover_text("How wide the mid bell is. High Q is surgical, low Q is broad and gentle.");
-                    ui.add(egui::Slider::new(high_db, -12.0..=12.0).text("high dB"))
-                        .on_hover_text("Boost (+) or cut (-) the highs / air.");
-                    ui.add(egui::Slider::new(high_hz, 2000.0..=16000.0).logarithmic(true).text("high Hz"))
-                        .on_hover_text("Where the high shelf takes effect.");
-                }
-                NodeParams::Saturator { drive, mix } => {
-                    ui.add(egui::Slider::new(drive, 1.0..=8.0).text("drive"))
-                        .on_hover_text("How hard the signal is pushed - more = warmer, then grittier.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend between clean (0) and saturated (1).");
-                }
-                NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants }
-                | NodeParams::PitchShift { pitch_semitones, formant_semitones, mix, preserve_formants } => {
-                    ui.add(egui::Slider::new(pitch_semitones, -12.0..=12.0).text("pitch"))
-                        .on_hover_text("Shift your pitch up or down in semitones (12 = one octave).");
-                    ui.checkbox(preserve_formants, "preserve formants")
-                        .on_hover_text("Keep your natural vocal character when shifting pitch (no chipmunk). Turn off for the classic sped-up/slowed-down sound.");
-                    ui.add(egui::Slider::new(formant_semitones, -12.0..=12.0).text("formant"))
-                        .on_hover_text("Shift the vocal-tract character on its own. Up sounds smaller/younger, down sounds bigger.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend between your dry voice (0) and the shifted voice (1). Use less than 1 to layer a harmony under your voice.");
-                }
-                NodeParams::Autotune { key, scale, strength, speed_ms, humanize, ref_a } => {
-                    use formant_core::dsp::autotune::NOTE_NAMES;
-                    ui.horizontal(|ui| {
-                        ui.label("key");
-                        egui::ComboBox::from_id_salt("at-key")
-                            .selected_text(NOTE_NAMES[(*key as usize) % 12])
-                            .show_ui(ui, |ui| {
-                                for (i, name) in NOTE_NAMES.iter().enumerate() {
-                                    ui.selectable_value(key, i as u8, *name);
-                                }
-                            });
-                        egui::ComboBox::from_id_salt("at-scale")
-                            .selected_text(scale.label())
-                            .show_ui(ui, |ui| {
-                                for s in formant_core::dsp::Scale::ALL {
-                                    ui.selectable_value(scale, s, s.label());
-                                }
-                            });
-                    });
-                    ui.add(egui::Slider::new(strength, 0.0..=1.0).text("strength"))
-                        .on_hover_text("How hard notes are pulled to the scale. 1.0 is a full snap (the hard robotic sound); lower is gentle correction.");
-                    ui.add(egui::Slider::new(speed_ms, 1.0..=300.0).logarithmic(true).text("speed ms"))
-                        .on_hover_text("How fast the pitch glides to the target. Fast (a few ms) is the classic autotune effect; slow (100+ ms) sounds natural.");
-                    ui.add(egui::Slider::new(humanize, 0.0..=1.0).text("humanize"))
-                        .on_hover_text("Relaxes the correction on long held notes so they keep their natural drift and vibrato, while short notes still snap. Raise it for a natural vocal, leave it at 0 for the hard effect.");
-                    ui.add(egui::Slider::new(ref_a, 430.0..=450.0).text("reference A"))
-                        .on_hover_text("Tuning reference for A4 (default 440 Hz).");
-                    ui.label(RichText::new("formants preserved automatically").color(theme::MUTED).small())
-                        .on_hover_text("Correction works on grains of your actual waveform, so your vocal character comes along for free. There's no setting to get wrong.");
-                }
-                NodeParams::Reverb { room_size, damping, mix } => {
-                    ui.add(egui::Slider::new(room_size, 0.0..=1.0).text("room"))
-                        .on_hover_text("Size of the space - bigger means a longer tail.");
-                    ui.add(egui::Slider::new(damping, 0.0..=1.0).text("damping"))
-                        .on_hover_text("How quickly the highs fade in the tail.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend between dry (0) and reverberant (1).");
-                }
-                NodeParams::Delay { time_ms, feedback, mix } => {
-                    ui.add(egui::Slider::new(time_ms, 20.0..=1000.0).text("time ms"))
-                        .on_hover_text("Echo spacing in milliseconds.");
-                    ui.add(egui::Slider::new(feedback, 0.0..=0.95).text("feedback"))
-                        .on_hover_text("How much the echo feeds back - higher means more repeats.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend between dry (0) and echoed (1).");
-                }
-                NodeParams::Chorus { depth_ms, rate_hz, mix } => {
-                    ui.add(egui::Slider::new(depth_ms, 0.0..=15.0).text("depth ms"))
-                        .on_hover_text("How wide the pitch wobble swings - more is lusher.");
-                    ui.add(egui::Slider::new(rate_hz, 0.05..=8.0).text("rate Hz"))
-                        .on_hover_text("Speed of the wobble.");
-                    ui.add(egui::Slider::new(mix, 0.0..=1.0).text("mix"))
-                        .on_hover_text("Blend between dry (0) and chorused (1).");
-                }
-                NodeParams::Limiter { ceiling_db, lookahead_ms, release_ms } => {
-                    ui.add(egui::Slider::new(ceiling_db, -24.0..=0.0).text("ceiling dB"))
-                        .on_hover_text("Maximum output level - nothing gets louder than this.");
-                    ui.add(egui::Slider::new(lookahead_ms, 0.2..=10.0).text("lookahead ms"))
-                        .on_hover_text("How far ahead it looks so it can turn down before a peak instead of clipping it. More is cleaner on plosives and costs that much delay.");
-                    ui.add(egui::Slider::new(release_ms, 10.0..=500.0).logarithmic(true).text("release ms"))
-                        .on_hover_text("How quickly the level comes back after a peak. Faster is louder, slower is smoother.");
-                }
-                NodeParams::Gain { gain_db } | NodeParams::Makeup { gain_db } => {
-                    ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("gain dB"))
-                        .on_hover_text("Volume adjustment in decibels (+ louder, - quieter).");
-                }
-                NodeParams::Mix { gain_db } => {
-                    ui.add(egui::Slider::new(gain_db, -24.0..=24.0).text("output dB"))
-                        .on_hover_text("Output trim after summing every wire feeding this node.");
-                }
                 NodeParams::Vst3 { name, params: stored, .. } => {
                     ui.label(RichText::new(name.as_str()).color(theme::MUTED));
                     if self.editors.contains_key(&id)
@@ -1440,8 +1281,10 @@ impl FormantApp {
                         }
                     }
                 }
-                NodeParams::Denoise | NodeParams::Input | NodeParams::Output => {
-                    ui.label(RichText::new("no parameters").color(theme::MUTED).small());
+                    NodeParams::Denoise | NodeParams::Input | NodeParams::Output => {
+                        ui.label(RichText::new("no parameters").color(theme::MUTED).small());
+                    }
+                    _ => {}
                 }
             }
 

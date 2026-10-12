@@ -3,6 +3,7 @@
 //! Launches the themed UI by default. `--seconds N` runs headless for testing.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod controls;
 mod engine;
 mod hw;
 mod logging;
