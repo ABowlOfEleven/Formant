@@ -6,6 +6,14 @@ use crate::dsp::svf::{Svf, SvfShape};
 use crate::dsp::{db_to_lin, time_to_coef};
 use crate::types::Sample;
 
+/// Longest supported lookahead. The knob stops at 40 ms; preset values clamp here.
+pub const MAX_LOOKAHEAD_MS: f32 = 50.0;
+
+/// Lookahead buffer length for `ms`, clamped to the supported range.
+pub(crate) fn lookahead_samples(ms: f32, sample_rate: u32) -> usize {
+    crate::dsp::ms_to_buffer_len(ms, MAX_LOOKAHEAD_MS, sample_rate)
+}
+
 /// What happens to the signal while the gate is closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum GateMode {
@@ -131,7 +139,7 @@ impl Gate {
         self.attack = time_to_coef(attack_ms, self.sample_rate);
         self.release = time_to_coef(release_ms, self.sample_rate);
         self.hold_samples = (hold_ms * 0.001 * self.sample_rate as f32) as u32;
-        let want = (lookahead_ms.max(0.0) * 0.001 * self.sample_rate as f32) as usize;
+        let want = lookahead_samples(lookahead_ms, self.sample_rate);
         if want != self.la.len() {
             self.la = vec![0.0; want];
             self.la_pos = 0;
@@ -278,6 +286,14 @@ mod tests {
     use crate::types::SAMPLE_RATE;
     use std::f32::consts::TAU;
 
+    #[test]
+    fn absurd_lookahead_from_a_preset_is_clamped() {
+        // An infinite lookahead used to size the buffer at usize::MAX and panic.
+        for ms in [f32::INFINITY, f32::NAN, 1.0e9, -5.0] {
+            let g = Gate::new(SAMPLE_RATE, -40.0, -80.0, 1.0, 0.0, 100.0, ms);
+            assert!(g.latency_samples() <= lookahead_samples(MAX_LOOKAHEAD_MS, SAMPLE_RATE), "{ms}");
+        }
+    }
     #[test]
     fn opens_on_signal_and_closes_on_silence() {
         let mut gate = Gate::new(SAMPLE_RATE, -30.0, -80.0, 2.0, 20.0, 60.0, 0.0);

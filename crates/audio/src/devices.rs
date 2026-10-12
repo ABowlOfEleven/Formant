@@ -13,6 +13,7 @@ use windows::Win32::Media::Audio::{
 use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL, STGM_READ};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
+use windows::Win32::System::Variant::VT_LPWSTR;
 
 /// Capture (input) or render (output) endpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +60,8 @@ pub fn list(direction: Direction) -> Result<Vec<DeviceInfo>> {
     for i in 0..count {
         let device = unsafe { collection.Item(i)? };
         let id = device_id(&device)?;
-        let name = friendly_name(&device)?;
+        // An endpoint without a name still works; it should not hide the rest.
+        let name = friendly_name(&device).unwrap_or_else(|_| "Unnamed device".into());
         let is_default = default_id.as_deref() == Some(id.as_str());
         out.push(DeviceInfo { id, name, direction, is_default });
     }
@@ -138,15 +140,20 @@ pub fn device_id(device: &IMMDevice) -> Result<String> {
 /// Read an endpoint's friendly name from its property store.
 pub fn friendly_name(device: &IMMDevice) -> Result<String> {
     // SAFETY: open the property store read-only and read the friendly-name
-    // PROPVARIANT. Friendly name is stored as VT_LPWSTR, so the union holds a
-    // PWSTR. We copy it out, then free the variant ourselves: since windows
+    // PROPVARIANT. A missing key comes back as VT_EMPTY with a null pointer,
+    // so check the type and the pointer before reading the string. We copy it
+    // out, then free the variant ourselves: since windows
     // 0.62, PROPVARIANT is a plain struct with no Drop, so skipping
     // PropVariantClear would leak the string on every device enumeration.
     unsafe {
         let store = device.OpenPropertyStore(STGM_READ)?;
         let mut prop = store.GetValue(&PKEY_Device_FriendlyName)?;
         let raw = prop.Anonymous.Anonymous.Anonymous.pwszVal;
-        let name = raw.to_string().context("friendly name was not valid UTF-16");
+        let name = if prop.Anonymous.Anonymous.vt != VT_LPWSTR || raw.is_null() {
+            Err(anyhow::anyhow!("endpoint has no friendly name"))
+        } else {
+            raw.to_string().context("friendly name was not valid UTF-16")
+        };
         let _ = PropVariantClear(&mut prop);
         name
     }

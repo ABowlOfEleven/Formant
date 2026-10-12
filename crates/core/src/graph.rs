@@ -738,6 +738,12 @@ pub struct Connection {
     pub to: NodeId,
 }
 
+/// Most nodes a loaded graph may hold. Far above any real chain, low enough
+/// that a shared file cannot ask the audio thread to build thousands of reverbs.
+pub const MAX_NODES: usize = 256;
+/// Most connections a loaded graph may hold.
+pub const MAX_CONNECTIONS: usize = 4 * MAX_NODES;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)] // tolerate fields added in newer versions
 pub struct Graph {
@@ -960,6 +966,32 @@ impl Graph {
             .sum()
     }
 
+    /// Check a graph read from a file before it reaches the audio thread.
+    /// Presets are shared files, and the audio callback builds every node's
+    /// state when a graph is applied, so the size must be bounded.
+    pub fn check_limits(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.nodes.len() <= MAX_NODES,
+            "graph has {} nodes; the limit is {MAX_NODES}",
+            self.nodes.len()
+        );
+        anyhow::ensure!(
+            self.connections.len() <= MAX_CONNECTIONS,
+            "graph has {} connections; the limit is {MAX_CONNECTIONS}",
+            self.connections.len()
+        );
+        Ok(())
+    }
+
+    /// Parse a graph from untrusted RON text (a preset or the saved session):
+    /// numbers must be finite and the size within [`MAX_NODES`].
+    pub fn from_ron(text: &str) -> anyhow::Result<Self> {
+        crate::persist::reject_non_finite(text)?;
+        let graph: Self = ron::from_str(text)?;
+        graph.check_limits()?;
+        Ok(graph)
+    }
+
     /// A showcase chain using parallel routing: the cleaned voice is split into a
     /// dry path, a heavily-compressed parallel path, and a saturated path, all
     /// blended back together through a `Mix`, then EQ'd and limited. Demonstrates
@@ -1074,12 +1106,11 @@ impl Graph {
 /// `latency_samples`, but computable from parameters alone so the UI can report
 /// the total without reaching into the audio thread.
 fn node_latency(params: &NodeParams) -> usize {
-    let ms_to_samples = |ms: f32| (ms.max(0.0) * 0.001 * SAMPLE_RATE as f32) as usize;
     match params {
         NodeParams::Denoise => Denoise::latency(),
-        NodeParams::Gate { lookahead_ms, .. } => ms_to_samples(*lookahead_ms),
+        NodeParams::Gate { lookahead_ms, .. } => crate::dsp::gate::lookahead_samples(*lookahead_ms, SAMPLE_RATE),
         NodeParams::Limiter { lookahead_ms, true_peak, .. } => {
-            ms_to_samples(*lookahead_ms).max(1)
+            crate::dsp::limiter::lookahead_samples(*lookahead_ms, SAMPLE_RATE)
                 + if *true_peak { crate::dsp::oversample::latency_for(4) } else { 0 }
         }
         NodeParams::Saturator { .. } => Saturator::latency(),
@@ -1554,20 +1585,27 @@ impl GraphProcessor {
         self.effects = effects;
 
         // A soloed node's signal replaces the output, for auditioning one node.
-        if let Some(s) = self.solo {
-            if let Some(buf) = self.node_bufs.get(&s) {
-                output.copy_from_slice(&buf[..n]);
-                return;
+        let soloed = self.solo.and_then(|s| self.node_bufs.get(&s));
+        if let Some(buf) = soloed {
+            output.copy_from_slice(&buf[..n]);
+        } else {
+            // Final output: the Output node's buffer, or the raw input passed
+            // through if the Output is unwired (so disconnecting it never goes
+            // silent).
+            match self.output {
+                Some(out) if self.upstreams.get(&out).is_some_and(|u| !u.is_empty()) => {
+                    output.copy_from_slice(&self.node_bufs[&out][..n]);
+                }
+                _ => output.copy_from_slice(input),
             }
         }
 
-        // Final output: the Output node's buffer, or the raw input passed through
-        // if the Output is unwired (so disconnecting it never goes silent).
-        match self.output {
-            Some(out) if self.upstreams.get(&out).is_some_and(|u| !u.is_empty()) => {
-                output.copy_from_slice(&self.node_bufs[&out][..n]);
+        // Last line of defense before the device and the virtual mic: a NaN or
+        // inf from any node (or a plugin) becomes silence, never a noise burst.
+        for v in output.iter_mut() {
+            if !v.is_finite() {
+                *v = 0.0;
             }
-            _ => output.copy_from_slice(input),
         }
     }
 }
@@ -1585,6 +1623,37 @@ fn same_kind(proc: &NodeProc, node: &Node) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn non_finite_samples_never_reach_the_output() {
+        // Built in code (not from a file), so it skips the load-time check and
+        // exercises the runtime guards. The limiter is bypassed to prove the
+        // final output guard holds on its own.
+        let mut g = Graph::linear(vec![
+            NodeParams::Gain { gain_db: f32::INFINITY },
+            NodeKind::Limiter.default_params(),
+        ]);
+        let mut proc = GraphProcessor::new(&g);
+        let input: Vec<f32> = (0..4800).map(|i| 0.2 * (i as f32 * 0.05).sin()).collect();
+        let mut out = vec![0.0; input.len()];
+        for _ in 0..10 {
+            proc.process(&input, &mut out);
+            assert!(out.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
+        }
+        let lim = g.nodes.iter().find(|n| n.params.kind() == NodeKind::Limiter).unwrap().id;
+        g.node_mut(lim).unwrap().bypass = true;
+        proc.apply_graph(&g);
+        for _ in 0..10 {
+            proc.process(&input, &mut out);
+            assert!(out.iter().all(|v| v.is_finite()));
+        }
+    }
+
+    #[test]
+    fn graph_from_ron_refuses_poisoned_sessions() {
+        assert!(Graph::from_ron("(nodes: [(id: 1, params: Gain(gain_db: NaN), bypass: false, pos: (0.0, 0.0))])").is_err());
+        let text = ron::ser::to_string(&Graph::default_chain()).unwrap();
+        assert_eq!(Graph::from_ron(&text).unwrap(), Graph::default_chain());
+    }
     #[test]
     fn default_chain_path_is_linear_input_to_output() {
         let g = Graph::default_chain();

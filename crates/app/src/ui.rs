@@ -504,14 +504,23 @@ impl FormantApp {
         let Some(path) = rfd::FileDialog::new().add_filter("Formant preset", &["ron"]).pick_file() else {
             return;
         };
-        match std::fs::read_to_string(&path).ok().and_then(|s| Preset::from_ron(&s).ok()) {
-            Some(p) => {
-                let _ = p.save();
-                self.presets = Preset::load_all();
-                self.status = format!("imported '{}'", p.name);
+        let preset = std::fs::read_to_string(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|s| Preset::from_ron(&s));
+        self.status = match preset {
+            Ok(mut p) => {
+                // Never replace a preset the user already has.
+                p.name = Preset::unused_name(&p.name);
+                match p.save() {
+                    Ok(_) => {
+                        self.presets = Preset::load_all();
+                        format!("imported '{}'", p.name)
+                    }
+                    Err(e) => format!("import failed: {e}"),
+                }
             }
-            None => self.status = "import failed (not a valid preset)".into(),
-        }
+            Err(e) => format!("import failed: {e}"),
+        };
     }
 }
 

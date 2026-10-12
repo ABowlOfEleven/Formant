@@ -39,8 +39,13 @@ impl Preset {
         )?)
     }
 
+    /// Parse a preset. Presets are shared files: numbers must be finite and
+    /// the graph within [`crate::graph::MAX_NODES`].
     pub fn from_ron(s: &str) -> anyhow::Result<Self> {
-        Ok(ron::from_str(s)?)
+        crate::persist::reject_non_finite(s)?;
+        let preset: Self = ron::from_str(s)?;
+        preset.graph.check_limits()?;
+        Ok(preset)
     }
 
     /// `%APPDATA%\Formant\presets`.
@@ -55,6 +60,16 @@ impl Preset {
         let path = dir.join(format!("{}.ron", sanitize(&self.name)));
         crate::persist::write_backup(&path, &self.to_ron()?)?;
         Ok(path)
+    }
+
+    /// `name`, or `name (imported)`, `name (imported 2)`, ... whichever does not
+    /// collide with a preset already saved. Different names can share a file
+    /// (`sanitize` maps them together), so this compares file names.
+    pub fn unused_name(name: &str) -> String {
+        match Self::dir() {
+            Some(dir) => unused_name_in(&dir, name),
+            None => name.to_string(),
+        }
     }
 
     /// Delete this preset's file, if present.
@@ -297,9 +312,57 @@ fn sanitize(name: &str) -> String {
         .collect()
 }
 
+fn unused_name_in(dir: &Path, name: &str) -> String {
+    let taken = |n: &str| dir.join(format!("{}.ron", sanitize(n))).exists();
+    if !taken(name) {
+        return name.to_string();
+    }
+    (1..)
+        .map(|i| if i == 1 { format!("{name} (imported)") } else { format!("{name} (imported {i})") })
+        .find(|n| !taken(n))
+        .expect("an unbounded range always finds a free name")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn importing_never_replaces_an_existing_preset() {
+        let dir = std::env::temp_dir().join(format!("formant-import-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Standard_Vocal.ron"), "").unwrap();
+
+        assert_eq!(unused_name_in(&dir, "Fresh"), "Fresh");
+        // "Standard?Vocal" sanitizes onto the existing file.
+        assert_eq!(unused_name_in(&dir, "Standard?Vocal"), "Standard?Vocal (imported)");
+        std::fs::write(dir.join("Standard_Vocal__imported_.ron"), "").unwrap();
+        assert_eq!(unused_name_in(&dir, "Standard Vocal"), "Standard Vocal (imported 2)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_finite_numbers_are_refused() {
+        for bad in ["inf", "-inf", "NaN"] {
+            let text = format!(
+                "(name: \"evil\", graph: (nodes: [(id: 1, params: Gain(gain_db: {bad}), bypass: false, pos: (0.0, 0.0))]))"
+            );
+            assert!(Preset::from_ron(&text).is_err(), "{bad} should be refused");
+        }
+        // Ordinary presets still load.
+        for p in Preset::factory() {
+            assert!(Preset::from_ron(&p.to_ron().unwrap()).is_ok(), "{} should load", p.name);
+        }
+    }
+
+    #[test]
+    fn oversized_graphs_are_refused() {
+        let node = "(id: 1, params: Reverb(room_size: 0.5, damping: 0.5, mix: 0.2), bypass: false, pos: (0.0, 0.0)),";
+        let text = |count: usize| format!("(name: \"big\", graph: (nodes: [{}]))", node.repeat(count));
+        assert!(Preset::from_ron(&text(crate::graph::MAX_NODES)).is_ok());
+        assert!(Preset::from_ron(&text(crate::graph::MAX_NODES + 1)).is_err());
+    }
 
     /// A broken file is reported and skipped; the good ones still load.
     #[test]

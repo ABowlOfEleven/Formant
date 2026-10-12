@@ -19,6 +19,15 @@ const TRUE_PEAK_OVERSAMPLE: usize = 4;
 const AUTO_SLOW_ATTACK_MS: f32 = 300.0;
 const AUTO_SLOW_RELEASE_MS: f32 = 1500.0;
 
+/// Longest supported lookahead. The knob stops at 10 ms; preset values clamp here.
+pub const MAX_LOOKAHEAD_MS: f32 = 20.0;
+
+/// Lookahead window length for `ms` (at least one sample), clamped to the
+/// supported range.
+pub(crate) fn lookahead_samples(ms: f32, sample_rate: u32) -> usize {
+    crate::dsp::ms_to_buffer_len(ms, MAX_LOOKAHEAD_MS, sample_rate).max(1)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LimiterSettings {
     pub ceiling_db: f32,
@@ -111,7 +120,7 @@ impl Limiter {
         self.ceiling = db_to_lin(s.ceiling_db);
         self.drive.set(db_to_lin(s.drive_db));
         self.release = time_to_coef(s.release_ms, self.sample_rate);
-        let look = ((s.lookahead_ms.max(0.0) * 0.001 * self.sample_rate as f32) as usize).max(1);
+        let look = lookahead_samples(s.lookahead_ms, self.sample_rate);
         // True-peak detection reports each sample a few samples late (the
         // interpolation filter), so the audio waits that much longer too.
         let detect_lag = if s.true_peak { self.peak_detect.latency_samples() } else { 0 };
@@ -142,6 +151,9 @@ impl Limiter {
     #[inline]
     pub fn process(&mut self, x: Sample) -> Sample {
         let x = x * self.drive.next();
+        // The limiter is the output's safety stage. A NaN or inf from upstream
+        // would poison the running average for a whole window, so it is silence.
+        let x = if x.is_finite() { x } else { 0.0 };
 
         // How far over the ceiling this sample is, in dB.
         let peak = if self.s.true_peak { self.peak_detect.upsample_peak(x) } else { x.abs() };
@@ -233,6 +245,28 @@ mod tests {
     use crate::types::SAMPLE_RATE;
     use std::f32::consts::TAU;
 
+    #[test]
+    fn absurd_lookahead_is_clamped() {
+        for ms in [f32::INFINITY, f32::NAN, 1.0e9] {
+            let l = Limiter::new(SAMPLE_RATE, LimiterSettings { lookahead_ms: ms, ..Default::default() });
+            assert!(l.latency_samples() <= 1000, "{ms}: {}", l.latency_samples());
+        }
+    }
+
+    #[test]
+    fn non_finite_input_comes_out_silent_and_does_not_linger() {
+        let mut l = limiter(-1.0);
+        for x in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for _ in 0..100 {
+                assert!(l.process(x).is_finite());
+            }
+        }
+        // Ordinary signal right after is still limited, not NaN.
+        for n in 0..4800 {
+            let y = l.process(2.0 * (n as f32 * 0.05).sin());
+            assert!(y.is_finite() && y.abs() <= 0.9, "{y}");
+        }
+    }
     fn limiter(ceiling_db: f32) -> Limiter {
         Limiter::new(
             SAMPLE_RATE,

@@ -59,3 +59,11 @@ pub(crate) fn time_to_coef(ms: f32, sample_rate: u32) -> f32 {
 pub(crate) fn db_to_lin(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
+
+/// A buffer length in samples for a time in milliseconds, clamped to
+/// `0..=max_ms`. The time can come from a preset file and sizes an allocation,
+/// so a non-finite or huge value must not reach `vec!`.
+pub(crate) fn ms_to_buffer_len(ms: f32, max_ms: f32, sample_rate: u32) -> usize {
+    let ms = if ms.is_finite() { ms.clamp(0.0, max_ms) } else { 0.0 };
+    (ms * 0.001 * sample_rate as f32) as usize
+}
