@@ -13,7 +13,7 @@ authors = ["Ethan Belanger <belangerethan@gmail.com>"]
 [workspace.dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
-ron = "0.8"
+ron = "0.12"
 rtrb = "0.4"
 nnnoiseless = { version = "0.5", default-features = false }
 ctrlc = "3"
