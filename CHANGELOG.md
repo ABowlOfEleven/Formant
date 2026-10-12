@@ -5,8 +5,9 @@ Changelog. The project uses semantic versioning.
 
 ## [Unreleased]
 
-A rebuild of the autotune node. Existing presets load and sound as before,
-except that the correction is now more accurate.
+A rebuild of the autotune node, a new studio-hardware look, and updated
+dependencies. Existing presets load and sound as before, except that the
+autotune correction is now more accurate.
 
 ### Added
 
@@ -35,6 +36,17 @@ except that the correction is now more accurate.
 - Grains are placed at their exact fractional positions, and pulse alignment no
   longer jumps between two peaks. Held notes sound smoother.
 - The autotune node uses about 14 times less CPU.
+- A new look styled after studio hardware. Panels are brushed metal with
+  screws and bevels. Node controls on the Mixer are knobs with LED arcs: drag
+  to turn, hold Shift for fine moves, scroll to nudge, and double-click to
+  reset to the default. Buttons have LEDs, the meters are LED ladders with
+  peak hold, and the spectrum and readouts sit behind glass. The Setup page
+  and the node editor use the same style.
+- A new app icon: a machined knob with an LED arc. The icon file now holds
+  every size from 16 to 256 px, so it stays sharp in the tray and taskbar.
+- Updated dependencies: eframe/egui 0.36, windows 0.62, ron 0.12, tray-icon
+  0.26, rfd 0.17, json5 1, rtrb 0.4 and winreg 0.56. Saved presets, sessions
+  and settings are unchanged on disk.
 ## [0.4.0]
 
 A quality pass over the whole signal chain. Existing presets and sessions
