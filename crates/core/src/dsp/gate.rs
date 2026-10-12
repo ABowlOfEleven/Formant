@@ -148,7 +148,8 @@ impl Gate {
     #[inline]
     fn apply(&mut self, open: bool, x: Sample) -> Sample {
         let target = if open { 1.0 } else { self.floor };
-        let coef = if target < self.gain { self.attack } else { self.release };
+        // Rising gain is the gate opening (attack); falling is closing (release).
+        let coef = if target > self.gain { self.attack } else { self.release };
         self.gain = coef * self.gain + (1.0 - coef) * target;
 
         // Apply the (present-time) gain to a delayed sample, so the gate opens
@@ -190,6 +191,32 @@ mod tests {
             gate.process(0.0);
         }
         assert!(!gate.is_open(), "gate failed to close on silence");
+    }
+
+    /// Attack is how fast the gate opens and release how fast it closes, the
+    /// convention on every hardware gate. With a 1 ms attack and a 200 ms
+    /// release, the gain must be nearly fully open 5 ms after a word starts,
+    /// and still mostly open 20 ms after the gate is told to close.
+    #[test]
+    fn attack_opens_and_release_closes() {
+        let mut gate = Gate::new(SAMPLE_RATE, -40.0, -80.0, 1.0, 0.0, 200.0, 0.0);
+        // Start fully closed.
+        for _ in 0..SAMPLE_RATE / 2 {
+            gate.process_gated(0.0, false);
+        }
+        // Open: 5 ms in, the gain should be most of the way up.
+        for _ in 0..(SAMPLE_RATE * 5 / 1000) {
+            gate.process_gated(0.0, true);
+        }
+        assert!(gate.gain > 0.9, "gate opened too slowly: gain {:.3} after 5 ms", gate.gain);
+        // Fully open, then close: 20 ms after closing, still well above half.
+        for _ in 0..SAMPLE_RATE / 2 {
+            gate.process_gated(0.0, true);
+        }
+        for _ in 0..(SAMPLE_RATE * 20 / 1000) {
+            gate.process_gated(0.0, false);
+        }
+        assert!(gate.gain > 0.8, "gate closed too fast: gain {:.3} 20 ms into a 200 ms release", gate.gain);
     }
 
     #[test]
