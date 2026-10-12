@@ -26,6 +26,7 @@ use crate::dsp::gate::GateMode;
 use crate::dsp::limiter::LimiterSettings;
 use crate::dsp::chorus::ChorusSettings;
 use crate::dsp::delay::DelaySettings;
+use crate::dsp::reverb::{ReverbKind, ReverbSettings};
 use crate::dsp::saturator::{SatKind, SaturatorSettings};
 use crate::engine::GateOverride;
 use crate::types::Sample;
@@ -397,7 +398,16 @@ impl NodeKind {
                 humanize: 0.3,
                 ref_a: 440.0,
             },
-            NodeKind::Reverb => NodeParams::Reverb { room_size: 0.5, damping: 0.5, mix: 0.25 },
+            NodeKind::Reverb => NodeParams::Reverb {
+                room_size: 0.5,
+                damping: 0.4,
+                mix: 0.2,
+                kind: ReverbKind::Plate,
+                predelay_ms: 20.0,
+                lowcut_hz: 200.0,
+                highcut_hz: 9000.0,
+                modulation: 0.3,
+            },
             NodeKind::Delay => NodeParams::Delay {
                 time_ms: 280.0,
                 feedback: 0.3,
@@ -609,7 +619,23 @@ pub enum NodeParams {
         humanize: f32,
         ref_a: f32,
     },
-    Reverb { room_size: f32, damping: f32, mix: f32 },
+    Reverb {
+        room_size: f32,
+        damping: f32,
+        mix: f32,
+        /// Older presets were the Freeverb room with no pre-delay, filters or
+        /// modulation.
+        #[serde(default)]
+        kind: ReverbKind,
+        #[serde(default)]
+        predelay_ms: f32,
+        #[serde(default)]
+        lowcut_hz: f32,
+        #[serde(default = "default_tone_off")]
+        highcut_hz: f32,
+        #[serde(default)]
+        modulation: f32,
+    },
     Delay {
         time_ms: f32,
         feedback: f32,
@@ -1081,7 +1107,7 @@ enum NodeProc {
     Pitch(Box<PitchShifter>),
     PitchShift(Box<PitchShifter>),
     Autotune(Box<Autotune>),
-    Reverb(Reverb),
+    Reverb(Box<Reverb>),
     Delay(Delay),
     Chorus(Chorus),
     Limiter(Limiter),
@@ -1136,8 +1162,11 @@ impl NodeProc {
                 a.set_humanize(humanize);
                 NodeProc::Autotune(Box::new(a))
             }
-            NodeParams::Reverb { room_size, damping, mix } => {
-                NodeProc::Reverb(Reverb::new(SAMPLE_RATE, room_size, damping, mix))
+            NodeParams::Reverb { room_size, damping, mix, kind, predelay_ms, lowcut_hz, highcut_hz, modulation } => {
+                NodeProc::Reverb(Box::new(Reverb::new(
+                    SAMPLE_RATE,
+                    ReverbSettings { room_size, damping, mix, kind, predelay_ms, lowcut_hz, highcut_hz, modulation },
+                )))
             }
             NodeParams::Delay { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter } => {
                 NodeProc::Delay(Delay::new(
@@ -1230,8 +1259,11 @@ impl NodeProc {
                 a.configure(*key, *scale, *strength, *speed_ms, *ref_a);
                 a.set_humanize(*humanize);
             }
-            (NodeProc::Reverb(r), NodeParams::Reverb { room_size, damping, mix }) => {
-                r.configure(*room_size, *damping, *mix);
+            (
+                NodeProc::Reverb(r),
+                &NodeParams::Reverb { room_size, damping, mix, kind, predelay_ms, lowcut_hz, highcut_hz, modulation },
+            ) => {
+                r.configure(ReverbSettings { room_size, damping, mix, kind, predelay_ms, lowcut_hz, highcut_hz, modulation });
             }
             (NodeProc::Delay(d), &NodeParams::Delay { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter }) => {
                 d.configure(DelaySettings { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter });

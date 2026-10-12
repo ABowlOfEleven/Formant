@@ -9,6 +9,7 @@ use eframe::egui::{self, Color32, Ui};
 use formant_core::dsp::compressor::{Character, Detector};
 use formant_core::dsp::deesser::{DeessDetection, DeessMode};
 use formant_core::dsp::gate::GateMode;
+use formant_core::dsp::reverb::ReverbKind;
 use formant_core::dsp::saturator::SatKind;
 use formant_core::dsp::highpass::SLOPES;
 use formant_core::dsp::Scale;
@@ -229,9 +230,14 @@ pub fn node_controls(params: &mut NodeParams) -> Option<Vec<Ctl<'_>>> {
                 knob(ref_a, "ref A", (430.0, 450.0), "Hz", 1, "Tuning reference for A4."),
             ]
         }
-        P::Reverb { room_size, damping, mix } => vec![
-            knob(room_size, "size", (0.0, 1.0), "", 2, "Size of the space. Bigger is a longer tail."),
-            knob(damping, "damping", (0.0, 1.0), "", 2, "How quickly the highs fade in the tail."),
+        P::Reverb { room_size, damping, mix, kind, predelay_ms, lowcut_hz, highcut_hz, modulation } => vec![
+            choice("type", kind, &ReverbKind::ALL, ReverbKind::label, "Room is a natural space. Plate is the classic bright, dense studio vocal reverb."),
+            knob(room_size, "size", (0.0, 1.0), "", 2, "How long the tail lasts."),
+            knob(damping, "damping", (0.0, 1.0), "", 2, "How quickly the highs fade in the tail. More sounds darker and more natural."),
+            knob(predelay_ms, "pre-delay", (0.0, 200.0), "ms", 0, "Gap before the reverb starts. 20 to 40 ms keeps the words clear in front of the tail."),
+            knob(modulation, "mod", (0.0, 1.0), "", 2, "Plate only: gentle movement in the tail that breaks up metallic ringing."),
+            knob(lowcut_hz, "low cut", (0.0, 1000.0), "Hz", 0, "Remove low end from the reverb so it doesn't muddy the voice. 0 is off."),
+            log_knob(highcut_hz, "high cut", (1000.0, 20000.0), "Hz", 0, "Darken the reverb. Fully up is open."),
             knob(mix, "mix", (0.0, 1.0), "", 2, "Blend of dry and reverberant sound."),
         ],
         P::Delay { time_ms, feedback, mix, lowcut_hz, highcut_hz, drive, wow, flutter } => vec![
