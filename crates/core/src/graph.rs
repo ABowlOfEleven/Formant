@@ -21,6 +21,7 @@ use crate::dsp::{
 };
 use crate::dsp::compressor::{Character, CompressorSettings, Detector};
 use crate::dsp::deesser::{DeEsserSettings, DeessDetection, DeessMode};
+use crate::dsp::eq::EqSettings;
 use crate::dsp::gate::GateMode;
 use crate::engine::GateOverride;
 use crate::types::Sample;
@@ -89,6 +90,24 @@ fn default_limiter_release() -> f32 {
 
 // Gate and de-esser defaults. Presets from before these fields existed load
 // with the same values a freshly added node gets.
+
+/// The EQ DSP settings for a `NodeParams::Eq`.
+fn eq_settings(p: &NodeParams) -> EqSettings {
+    match *p {
+        NodeParams::Eq {
+            low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz,
+            low_bell, low_mid_db, low_mid_hz, low_mid_q, high_bell, proportional_q, output_db,
+        } => EqSettings {
+            low_db, low_hz, low_bell, low_mid_db, low_mid_hz, low_mid_q,
+            mid_db, mid_hz, mid_q, high_db, high_hz, high_bell, proportional_q, output_db,
+        },
+        _ => EqSettings::default(),
+    }
+}
+
+fn default_low_mid_hz() -> f32 {
+    crate::dsp::eq::DEFAULT_LOW_MID_HZ
+}
 
 /// The de-esser DSP settings for a `NodeParams::DeEsser`.
 fn deess_settings(p: &NodeParams) -> DeEsserSettings {
@@ -317,6 +336,13 @@ impl NodeKind {
                 mid_hz: default_mid_hz(),
                 mid_q: default_mid_q(),
                 high_hz: default_high_hz(),
+                low_bell: false,
+                low_mid_db: 0.0,
+                low_mid_hz: default_low_mid_hz(),
+                low_mid_q: default_mid_q(),
+                high_bell: false,
+                proportional_q: false,
+                output_db: 0.0,
             },
             NodeKind::Saturator => NodeParams::Saturator { drive: 2.0, mix: 0.25 },
             NodeKind::PitchShift => NodeParams::PitchShift {
@@ -472,6 +498,20 @@ pub enum NodeParams {
         mid_q: f32,
         #[serde(default = "default_high_hz")]
         high_hz: f32,
+        #[serde(default)]
+        low_bell: bool,
+        #[serde(default)]
+        low_mid_db: f32,
+        #[serde(default = "default_low_mid_hz")]
+        low_mid_hz: f32,
+        #[serde(default = "default_mid_q")]
+        low_mid_q: f32,
+        #[serde(default)]
+        high_bell: bool,
+        #[serde(default)]
+        proportional_q: bool,
+        #[serde(default)]
+        output_db: f32,
     },
     Saturator { drive: f32, mix: f32 },
     Pitch {
@@ -857,6 +897,13 @@ impl Graph {
                 mid_hz: default_mid_hz(),
                 mid_q: default_mid_q(),
                 high_hz: default_high_hz(),
+                low_bell: false,
+                low_mid_db: 0.0,
+                low_mid_hz: default_low_mid_hz(),
+                low_mid_q: default_mid_q(),
+                high_bell: false,
+                proportional_q: false,
+                output_db: 0.0,
             },
             [1210.0, 240.0],
         );
@@ -959,11 +1006,7 @@ impl NodeProc {
             NodeParams::Compressor { .. } => {
                 NodeProc::Compressor(Compressor::new(SAMPLE_RATE, comp_settings(params)))
             }
-            NodeParams::Eq { low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz } => {
-                NodeProc::Eq(Eq::new(
-                    SAMPLE_RATE, low_db, low_hz, mid_db, mid_hz, mid_q, high_db, high_hz,
-                ))
-            }
+            NodeParams::Eq { .. } => NodeProc::Eq(Eq::new(SAMPLE_RATE, eq_settings(params))),
             NodeParams::Saturator { drive, mix } => NodeProc::Saturator(Saturator::new(drive, mix)),
             NodeParams::Pitch { pitch_semitones, formant_semitones, mix, preserve_formants } => {
                 // Legacy "Warp": small frame, low overlap (its lo-fi character).
@@ -1048,11 +1091,8 @@ impl NodeProc {
                 c.configure(comp_settings(p));
             }
 
-            (
-                NodeProc::Eq(eq),
-                NodeParams::Eq { low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz },
-            ) => {
-                eq.set_bands(*low_db, *low_hz, *mid_db, *mid_hz, *mid_q, *high_db, *high_hz);
+            (NodeProc::Eq(eq), p @ NodeParams::Eq { .. }) => {
+                eq.configure(eq_settings(p));
             }
             (NodeProc::Saturator(s), NodeParams::Saturator { drive, mix }) => {
                 s.configure(*drive, *mix);

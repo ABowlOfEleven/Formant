@@ -173,7 +173,22 @@ fn eq(
     high_db: f32,
     high_hz: f32,
 ) -> NodeParams {
-    NodeParams::Eq { low_db, mid_db, high_db, low_hz, mid_hz, mid_q, high_hz }
+    NodeParams::Eq {
+        low_db,
+        mid_db,
+        high_db,
+        low_hz,
+        mid_hz,
+        mid_q,
+        high_hz,
+        low_bell: false,
+        low_mid_db: 0.0,
+        low_mid_hz: crate::dsp::eq::DEFAULT_LOW_MID_HZ,
+        low_mid_q: 1.0,
+        high_bell: false,
+        proportional_q: false,
+        output_db: 0.0,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
