@@ -2,7 +2,8 @@
 //!
 //! Stored as RON under `%APPDATA%\Formant\presets`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -94,22 +95,56 @@ impl Preset {
     }
 
     /// Load every `.ron` preset in the presets directory.
+    ///
+    /// A file that cannot be read or parsed is skipped, and the problem is sent
+    /// to the reporter set with [`set_load_error_reporter`] (if any), so a
+    /// preset never just disappears without a trace.
     pub fn load_all() -> Vec<Preset> {
         let Some(dir) = Self::dir() else {
             return Vec::new();
         };
+        Self::load_dir(&dir, |path, err| {
+            if let Some(report) = LOAD_ERROR_REPORTER.get() {
+                report(&format!("preset {} skipped: {err:#}", path.display()));
+            }
+        })
+    }
+
+    /// Load every `.ron` preset in `dir`, calling `on_error` for each file that
+    /// fails to read or parse. Sorted by name, case-insensitive.
+    pub fn load_dir(dir: &Path, mut on_error: impl FnMut(&Path, &anyhow::Error)) -> Vec<Preset> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Vec::new();
         };
         let mut presets: Vec<Preset> = entries
             .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "ron"))
-            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-            .filter_map(|s| Preset::from_ron(&s).ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "ron"))
+            .filter_map(|path| {
+                let loaded = std::fs::read_to_string(&path)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|s| Preset::from_ron(&s));
+                match loaded {
+                    Ok(preset) => Some(preset),
+                    Err(err) => {
+                        on_error(&path, &err);
+                        None
+                    }
+                }
+            })
             .collect();
         presets.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         presets
     }
+}
+
+static LOAD_ERROR_REPORTER: OnceLock<fn(&str)> = OnceLock::new();
+
+/// Set where [`Preset::load_all`] reports presets it had to skip. Core has no
+/// logger of its own; the app passes its log function here once at startup.
+/// Later calls are ignored.
+pub fn set_load_error_reporter(report: fn(&str)) {
+    let _ = LOAD_ERROR_REPORTER.set(report);
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +246,24 @@ fn sanitize(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A broken file is reported and skipped; the good ones still load.
+    #[test]
+    fn load_dir_reports_presets_it_cannot_parse() {
+        let dir = std::env::temp_dir().join(format!("formant-presets-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("good.ron"), Preset::default().to_ron().unwrap()).unwrap();
+        std::fs::write(dir.join("broken.ron"), "(name: \"broken\", graph: (nodes: [(id: 1, params: Nope)]))").unwrap();
+        std::fs::write(dir.join("notes.txt"), "not a preset").unwrap();
+
+        let mut failed = Vec::new();
+        let presets = Preset::load_dir(&dir, |path, _| failed.push(path.file_name().unwrap().to_owned()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(presets.len(), 1);
+        assert_eq!(failed, vec![std::ffi::OsString::from("broken.ron")]);
+    }
 
     #[test]
     fn ron_round_trips() {

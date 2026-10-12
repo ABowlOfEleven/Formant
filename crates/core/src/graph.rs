@@ -84,6 +84,51 @@ fn default_limiter_release() -> f32 {
     100.0
 }
 
+// Gate and de-esser defaults. Presets from before these fields existed load
+// with the same values a freshly added node gets.
+
+fn default_gate_threshold() -> f32 {
+    -45.0
+}
+fn default_gate_range() -> f32 {
+    -60.0
+}
+fn default_gate_attack() -> f32 {
+    2.0
+}
+fn default_gate_hold() -> f32 {
+    40.0
+}
+fn default_gate_release() -> f32 {
+    120.0
+}
+fn default_deess_split() -> f32 {
+    6800.0
+}
+
+/// The gate's UI range for its threshold, in dB.
+const GATE_THRESHOLD_MIN_DB: f32 = -80.0;
+const GATE_THRESHOLD_MAX_DB: f32 = 0.0;
+
+/// Reads the gate threshold as `threshold_db`, or as the legacy linear
+/// `threshold` field (an alias), which early presets stored as an amplitude
+/// such as `0.02`.
+///
+/// The two shapes are told apart by sign: a dB threshold in the UI range is
+/// never positive, and a linear amplitude above zero always is. A positive
+/// value is converted with `20 * log10(x)` and clamped to the UI range.
+fn deserialize_gate_threshold<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = f32::deserialize(deserializer)?;
+    Ok(if v > 0.0 {
+        (20.0 * v.log10()).clamp(GATE_THRESHOLD_MIN_DB, GATE_THRESHOLD_MAX_DB)
+    } else {
+        v
+    })
+}
+
 /// A processor for a `Vst3` node, supplied by the host app (which owns the
 /// plugin instance). Lives behind a trait so core never depends on the VST3 /
 /// Windows hosting layer.
@@ -173,18 +218,18 @@ impl NodeKind {
             NodeKind::HighPass => NodeParams::HighPass { cutoff_hz: 85.0, steep: true },
             NodeKind::Denoise => NodeParams::Denoise,
             NodeKind::Gate => NodeParams::Gate {
-                threshold_db: -45.0,
-                range_db: -60.0,
-                attack_ms: 2.0,
-                hold_ms: 40.0,
-                release_ms: 120.0,
+                threshold_db: default_gate_threshold(),
+                range_db: default_gate_range(),
+                attack_ms: default_gate_attack(),
+                hold_ms: default_gate_hold(),
+                release_ms: default_gate_release(),
                 vad_gate: true,
                 lookahead_ms: default_gate_lookahead(),
             },
             NodeKind::DeEsser => NodeParams::DeEsser {
                 threshold_db: -28.0,
                 ratio: 4.0,
-                split_hz: 6800.0,
+                split_hz: default_deess_split(),
                 range_db: 8.0,
             },
             // Gentle by default: a moderate ratio with a wide knee and an
@@ -263,11 +308,23 @@ pub enum NodeParams {
     },
     Denoise,
     Gate {
+        /// Early presets stored a linear `threshold`; see
+        /// [`deserialize_gate_threshold`].
+        #[serde(
+            alias = "threshold",
+            default = "default_gate_threshold",
+            deserialize_with = "deserialize_gate_threshold"
+        )]
         threshold_db: f32,
+        #[serde(default = "default_gate_range")]
         range_db: f32,
+        #[serde(default = "default_gate_attack")]
         attack_ms: f32,
+        #[serde(default = "default_gate_hold")]
         hold_ms: f32,
+        #[serde(default = "default_gate_release")]
         release_ms: f32,
+        #[serde(default = "default_true")]
         vad_gate: bool,
         #[serde(default = "default_gate_lookahead")]
         lookahead_ms: f32,
@@ -275,6 +332,7 @@ pub enum NodeParams {
     DeEsser {
         threshold_db: f32,
         ratio: f32,
+        #[serde(default = "default_deess_split")]
         split_hz: f32,
         /// Cap on how much the sibilance band may be pulled down.
         #[serde(default = "default_deess_range")]
@@ -1443,6 +1501,100 @@ mod tests {
         let mut out = vec![0.0; 480];
         proc.process(&input, &mut out);
         assert!(out.iter().all(|x| x.is_finite()));
+    }
+
+    /// Parses one node's `params` the way a preset file stores it.
+    fn params_from_ron(s: &str) -> NodeParams {
+        ron::from_str(s).unwrap_or_else(|e| panic!("legacy params should load: {e}
+{s}"))
+    }
+
+    /// The gate from early presets (`default.ron`): a linear `threshold` and
+    /// `vad_gate`, nothing else. The amplitude is converted to dB and the rest
+    /// takes the current defaults.
+    #[test]
+    fn loads_the_legacy_linear_gate_threshold() {
+        let old = r#"Gate(
+                    threshold: 0.02,
+                    vad_gate: true,
+                )"#;
+        match params_from_ron(old) {
+            NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms } => {
+                assert!((threshold_db - 20.0 * 0.02f32.log10()).abs() < 1e-4, "got {threshold_db}");
+                assert!((threshold_db + 33.979).abs() < 1e-2, "got {threshold_db}");
+                assert!(vad_gate);
+                assert_eq!(range_db, default_gate_range());
+                assert_eq!(attack_ms, default_gate_attack());
+                assert_eq!(hold_ms, default_gate_hold());
+                assert_eq!(release_ms, default_gate_release());
+                assert_eq!(lookahead_ms, default_gate_lookahead());
+            }
+            other => panic!("wrong node: {other:?}"),
+        }
+
+        // Same shape from `personal_with_vst3.ron`, with a higher threshold.
+        let old = r#"Gate(
+                    threshold: 0.2,
+                    vad_gate: true,
+                )"#;
+        match params_from_ron(old) {
+            NodeParams::Gate { threshold_db, .. } => {
+                assert!((threshold_db + 13.979).abs() < 1e-2, "got {threshold_db}");
+            }
+            other => panic!("wrong node: {other:?}"),
+        }
+    }
+
+    /// The linear-to-dB conversion stays inside the gate's UI range, and a
+    /// current dB threshold (never positive) passes through untouched.
+    #[test]
+    fn gate_threshold_conversion_clamps_and_leaves_db_alone() {
+        let threshold = |s: &str| match params_from_ron(s) {
+            NodeParams::Gate { threshold_db, .. } => threshold_db,
+            other => panic!("wrong node: {other:?}"),
+        };
+        assert_eq!(threshold("Gate(threshold: 0.00001)"), GATE_THRESHOLD_MIN_DB);
+        assert_eq!(threshold("Gate(threshold: 3.0)"), GATE_THRESHOLD_MAX_DB);
+        assert_eq!(threshold("Gate(threshold_db: -45.0)"), -45.0);
+        assert_eq!(threshold("Gate(threshold_db: 0.0)"), 0.0);
+        assert_eq!(threshold("Gate(vad_gate: false)"), default_gate_threshold());
+
+        let current = NodeKind::Gate.default_params();
+        let text = ron::to_string(&current).unwrap();
+        assert_eq!(params_from_ron(&text), current, "a saved gate must round-trip");
+    }
+
+    /// The de-esser from early presets (all three affected files): only
+    /// `threshold_db` and `ratio`. The split frequency takes the current default.
+    #[test]
+    fn loads_the_legacy_deesser_without_split_hz() {
+        for (old, want_threshold, want_ratio) in [
+            (
+                r#"DeEsser(
+                    threshold_db: -30.0,
+                    ratio: 4.0,
+                )"#,
+                -30.0,
+                4.0,
+            ),
+            (
+                r#"DeEsser(
+                    threshold_db: -25.0,
+                    ratio: 3.0,
+                )"#,
+                -25.0,
+                3.0,
+            ),
+        ] {
+            match params_from_ron(old) {
+                NodeParams::DeEsser { threshold_db, ratio, split_hz, range_db } => {
+                    assert_eq!((threshold_db, ratio), (want_threshold, want_ratio));
+                    assert_eq!(split_hz, default_deess_split());
+                    assert_eq!(range_db, default_deess_range());
+                }
+                other => panic!("wrong node: {other:?}"),
+            }
+        }
     }
 
     #[test]

@@ -22,6 +22,7 @@ use crate::engine::Engine;
 
 fn main() -> anyhow::Result<()> {
     logging::init();
+    formant_core::presets::set_load_error_reporter(logging::line);
     let result = run();
     if let Err(e) = &result {
         // A returned error would otherwise exit with no window and no message.
