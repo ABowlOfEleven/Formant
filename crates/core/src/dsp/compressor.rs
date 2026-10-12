@@ -206,9 +206,9 @@ impl Compressor {
         self.smoother.configure(self.sample_rate, s.attack_ms, s.release_ms);
         self.sc_hpf = if s.sc_hpf_hz > 0.0 {
             let mut f = self.sc_hpf.take().unwrap_or_else(|| {
-                Svf::new(SvfShape::HighPass, self.sample_rate, s.sc_hpf_hz, 0.7071, 0.0)
+                Svf::new(SvfShape::HighPass, self.sample_rate, s.sc_hpf_hz, crate::dsp::svf::BUTTERWORTH_Q, 0.0)
             });
-            f.set(SvfShape::HighPass, self.sample_rate, s.sc_hpf_hz, 0.7071, 0.0);
+            f.set(SvfShape::HighPass, self.sample_rate, s.sc_hpf_hz, crate::dsp::svf::BUTTERWORTH_Q, 0.0);
             Some(f)
         } else {
             None

@@ -15,6 +15,9 @@
 
 use std::f64::consts::PI;
 
+/// Q of a second-order Butterworth section (1 / sqrt 2): maximally flat.
+pub const BUTTERWORTH_Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
 /// What the filter outputs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SvfShape {
@@ -167,7 +170,7 @@ impl OnePoleLp {
 pub fn butterworth_qs(order: usize) -> Vec<f32> {
     (1..=order / 2)
         .map(|k| {
-            let theta = if order % 2 == 0 {
+            let theta = if order.is_multiple_of(2) {
                 (2 * k - 1) as f64 * PI / (2 * order) as f64
             } else {
                 k as f64 * PI / order as f64
@@ -197,9 +200,9 @@ mod tests {
     #[test]
     fn responses_match_the_cookbook_shapes() {
         let sr = SAMPLE_RATE;
-        let mut hp = Svf::new(SvfShape::HighPass, sr, 100.0, 0.7071, 0.0);
+        let mut hp = Svf::new(SvfShape::HighPass, sr, 100.0, BUTTERWORTH_Q, 0.0);
         assert!((gain_at(&mut |x| hp.process(x), 100.0) + 3.0).abs() < 0.3, "HPF -3 dB at fc");
-        let mut hp = Svf::new(SvfShape::HighPass, sr, 100.0, 0.7071, 0.0);
+        let mut hp = Svf::new(SvfShape::HighPass, sr, 100.0, BUTTERWORTH_Q, 0.0);
         assert!(gain_at(&mut |x| hp.process(x), 2000.0).abs() < 0.1, "HPF passband flat");
 
         let mut bell = Svf::new(SvfShape::Bell, sr, 1000.0, 1.0, 6.0);
@@ -210,9 +213,9 @@ mod tests {
         let mut bp = Svf::new(SvfShape::BandPass, sr, 6500.0, 1.2, 0.0);
         assert!(gain_at(&mut |x| bp.process(x), 6500.0).abs() < 0.2, "band-pass 0 dB at center");
 
-        let mut ls = Svf::new(SvfShape::LowShelf, sr, 200.0, 0.7071, -6.0);
+        let mut ls = Svf::new(SvfShape::LowShelf, sr, 200.0, BUTTERWORTH_Q, -6.0);
         assert!((gain_at(&mut |x| ls.process(x), 30.0) + 6.0).abs() < 0.3, "low shelf -6 below");
-        let mut hs = Svf::new(SvfShape::HighShelf, sr, 5000.0, 0.7071, 6.0);
+        let mut hs = Svf::new(SvfShape::HighShelf, sr, 5000.0, BUTTERWORTH_Q, 6.0);
         assert!((gain_at(&mut |x| hs.process(x), 18_000.0) - 6.0).abs() < 0.4, "high shelf +6 above");
     }
 
@@ -231,13 +234,13 @@ mod tests {
     /// must not produce spikes. A smooth input must stay smooth.
     #[test]
     fn survives_per_sample_modulation_without_spikes() {
-        let mut f = Svf::new(SvfShape::HighPass, SAMPLE_RATE, 40.0, 0.7071, 0.0);
+        let mut f = Svf::new(SvfShape::HighPass, SAMPLE_RATE, 40.0, BUTTERWORTH_Q, 0.0);
         let mut prev = 0.0f32;
         let mut worst = 0.0f32;
         for n in 0..SAMPLE_RATE {
             let t = n as f32 / SAMPLE_RATE as f32;
             let fc = 40.0 * 10f32.powf(1.0 + (TAU * 3.0 * t).sin()); // 40 Hz to 4 kHz, 3x a second
-            f.set(SvfShape::HighPass, SAMPLE_RATE, fc, 0.7071, 0.0);
+            f.set(SvfShape::HighPass, SAMPLE_RATE, fc, BUTTERWORTH_Q, 0.0);
             let y = f.process(0.5 * (TAU * 220.0 * t).sin());
             if n > 100 {
                 worst = worst.max((y - prev).abs());

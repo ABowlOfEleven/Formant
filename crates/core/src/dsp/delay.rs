@@ -111,8 +111,8 @@ impl Delay {
         let set = |slot: &mut Option<Svf>, on: bool, shape: SvfShape, hz: f32| {
             if on {
                 match slot {
-                    Some(f) => f.set(shape, sr, hz, 0.7071, 0.0),
-                    None => *slot = Some(Svf::new(shape, sr, hz, 0.7071, 0.0)),
+                    Some(f) => f.set(shape, sr, hz, crate::dsp::svf::BUTTERWORTH_Q, 0.0),
+                    None => *slot = Some(Svf::new(shape, sr, hz, crate::dsp::svf::BUTTERWORTH_Q, 0.0)),
                 }
             } else {
                 *slot = None;

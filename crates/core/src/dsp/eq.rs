@@ -21,7 +21,7 @@ pub const DEFAULT_HIGH_HZ: f32 = 10000.0;
 
 /// Q used by the low and high bands (as shelves, a gentle Butterworth slope;
 /// as bells, a broad musical width).
-const EDGE_Q: f32 = 0.707;
+const EDGE_Q: f32 = crate::dsp::svf::BUTTERWORTH_Q;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EqSettings {

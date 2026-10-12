@@ -65,8 +65,10 @@ impl Smoothed {
         (self.current - self.target).abs() <= 1e-4 * self.target.abs().max(1.0)
     }
 
-    /// Advance one sample and return the new value.
+    /// Advance one sample and return the new value. (Not an `Iterator`: it
+    /// never ends, and a smoother is not a sequence anyone collects.)
     #[inline]
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f32 {
         self.current = self.target + (self.current - self.target) * self.coef;
         if self.settled() {

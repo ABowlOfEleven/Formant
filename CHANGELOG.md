@@ -19,6 +19,12 @@ autotune correction is now more accurate.
   --example autotune_lab`). It makes test vocals, measures pitch accuracy,
   warble, wrong notes, clicks and roughness, and writes WAV files to listen to.
 
+### Fixed
+
+- The gate opened at the release speed and closed at the attack speed. With
+  the default settings it took about 120 ms to open, which cut off the
+  start of words.
+
 ### Changed
 
 - The target note no longer flips between two notes when you sing near the
@@ -44,6 +50,31 @@ autotune correction is now more accurate.
   and the node editor use the same style.
 - A new app icon: a machined knob with an LED arc. The icon file now holds
   every size from 16 to 256 px, so it stays sharp in the tray and taskbar.
+- Every built-in effect was reworked from published reference designs and
+  expired patents (see `docs/research/effects-references.md`), and all of
+  them gained controls. Older presets load with their old behavior.
+  - Compressor: Clean, FET, Opto and Bus characters, a peak or RMS
+    detector, a sidechain high-pass, auto release and auto make-up.
+  - Gate: an expander mode, a hysteresis control and sidechain filters.
+  - De-esser: split or wideband, absolute or relative detection, band
+    width, and a listen switch.
+  - EQ: four bands, with shelf or bell edges, proportional Q and an output
+    trim.
+  - High-pass: slopes from 6 to 48 dB/oct.
+  - Limiter: drive, auto release and a true-peak switch. The ceiling now
+    holds without clipping.
+  - Saturator: soft, hard, tube and tape types, bias, tone and output, with
+    better anti-aliasing.
+  - Reverb: a plate as well as the room, with pre-delay, modulation and low
+    and high cuts.
+  - Delay: a time control that glides, filtered and saturating repeats,
+    wow and flutter.
+  - Chorus: up to three voices, a base delay, feedback and a high cut.
+- Turning any knob no longer clicks or zippers. Every control glides to its
+  new value, and filters keep their state while they move. An effects test
+  bench (`cargo run --release -p formant-core --example effects_lab`)
+  measures this for each effect.
+- The Nodes inspector shows each effect's controls as knobs and LED buttons.
 - Updated dependencies: eframe/egui 0.36, windows 0.62, ron 0.12, tray-icon
   0.26, rfd 0.17, json5 1, rtrb 0.4 and winreg 0.56. Saved presets, sessions
   and settings are unchanged on disk.

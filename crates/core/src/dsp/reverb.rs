@@ -299,9 +299,9 @@ impl Plate {
         let m = (std::f32::consts::TAU * self.phase).sin() * self.excursion;
         let dd2 = (self.decay + 0.15).clamp(0.25, 0.5);
         let feed = [self.delay2[1].out() * self.decay, self.delay2[0].out() * self.decay];
-        for side in 0..2 {
+        for (side, &fb) in feed.iter().enumerate() {
             let offset = if side == 0 { m } else { -m };
-            let a = self.mod_ap[side].process(v + feed[side], -0.70, offset);
+            let a = self.mod_ap[side].process(v + fb, -0.70, offset);
             self.delay1[side].write(a);
             let d = self.delay1[side].out();
             self.damp_state[side] += (1.0 - self.damping) * (d - self.damp_state[side]);
@@ -369,8 +369,8 @@ impl Reverb {
         let set = |slot: &mut Option<Svf>, on: bool, shape: SvfShape, hz: f32| {
             if on {
                 match slot {
-                    Some(f) => f.set(shape, sr, hz, 0.7071, 0.0),
-                    None => *slot = Some(Svf::new(shape, sr, hz, 0.7071, 0.0)),
+                    Some(f) => f.set(shape, sr, hz, crate::dsp::svf::BUTTERWORTH_Q, 0.0),
+                    None => *slot = Some(Svf::new(shape, sr, hz, crate::dsp::svf::BUTTERWORTH_Q, 0.0)),
                 }
             } else {
                 *slot = None;

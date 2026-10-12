@@ -148,8 +148,8 @@ impl Gate {
         let set = |slot: &mut Option<Svf>, shape: SvfShape, hz: f32| {
             if hz > 0.0 {
                 match slot {
-                    Some(f) => f.set(shape, sr, hz, 0.7071, 0.0),
-                    None => *slot = Some(Svf::new(shape, sr, hz, 0.7071, 0.0)),
+                    Some(f) => f.set(shape, sr, hz, crate::dsp::svf::BUTTERWORTH_Q, 0.0),
+                    None => *slot = Some(Svf::new(shape, sr, hz, crate::dsp::svf::BUTTERWORTH_Q, 0.0)),
                 }
             } else {
                 *slot = None;
