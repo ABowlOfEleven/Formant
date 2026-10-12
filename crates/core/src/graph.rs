@@ -87,6 +87,16 @@ fn default_limiter_release() -> f32 {
 // Gate and de-esser defaults. Presets from before these fields existed load
 // with the same values a freshly added node gets.
 
+/// Effective high-pass slope: an explicit `slope_db`, or the legacy `steep`
+/// switch (24 or 12 dB/oct) for presets saved before slopes existed.
+pub fn hpf_slope(steep: bool, slope_db: u32) -> u32 {
+    match slope_db {
+        0 if steep => 24,
+        0 => 12,
+        s => s,
+    }
+}
+
 fn default_gate_threshold() -> f32 {
     -45.0
 }
@@ -215,7 +225,7 @@ impl NodeKind {
         match self {
             NodeKind::Input => NodeParams::Input,
             NodeKind::Output => NodeParams::Output,
-            NodeKind::HighPass => NodeParams::HighPass { cutoff_hz: 85.0, steep: true },
+            NodeKind::HighPass => NodeParams::HighPass { cutoff_hz: 85.0, steep: true, slope_db: 18 },
             NodeKind::Denoise => NodeParams::Denoise,
             NodeKind::Gate => NodeParams::Gate {
                 threshold_db: default_gate_threshold(),
@@ -305,6 +315,10 @@ pub enum NodeParams {
         /// 24 dB/octave instead of 12.
         #[serde(default = "default_true")]
         steep: bool,
+        /// Slope in dB/octave (6 to 48). Zero, which is what older presets
+        /// load as, means "use `steep`": 24 if set, else 12.
+        #[serde(default)]
+        slope_db: u32,
     },
     Denoise,
     Gate {
@@ -695,7 +709,7 @@ impl Graph {
         let mut g = Graph { nodes: Vec::new(), connections: Vec::new(), next_id: 1 };
         // Front-end cleanup (linear).
         let input = g.add_node(P::Input, [40.0, 240.0]);
-        let hpf = g.add_node(P::HighPass { cutoff_hz: 85.0, steep: true }, [190.0, 240.0]);
+        let hpf = g.add_node(P::HighPass { cutoff_hz: 85.0, steep: true, slope_db: 18 }, [190.0, 240.0]);
         let denoise = g.add_node(P::Denoise, [340.0, 240.0]);
         let gate = g.add_node(
             P::Gate {
@@ -826,8 +840,8 @@ impl NodeProc {
             NodeParams::Input | NodeParams::Output | NodeParams::Vst3 { .. } => {
                 NodeProc::Passthrough
             }
-            NodeParams::HighPass { cutoff_hz, steep } => {
-                NodeProc::HighPass(HighPass::new(SAMPLE_RATE, cutoff_hz, steep))
+            NodeParams::HighPass { cutoff_hz, steep, slope_db } => {
+                NodeProc::HighPass(HighPass::new(SAMPLE_RATE, cutoff_hz, hpf_slope(steep, slope_db)))
             }
             NodeParams::Denoise => NodeProc::Denoise(Box::new(Denoise::new())),
             NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms } => {
@@ -924,8 +938,8 @@ impl NodeProc {
     /// Update params in place where possible (preserving filter state).
     fn set_params(&mut self, params: &NodeParams) {
         match (self, params) {
-            (NodeProc::HighPass(b), NodeParams::HighPass { cutoff_hz, steep }) => {
-                b.configure(*cutoff_hz, *steep);
+            (NodeProc::HighPass(b), NodeParams::HighPass { cutoff_hz, steep, slope_db }) => {
+                b.configure(*cutoff_hz, hpf_slope(*steep, *slope_db));
             }
             (
                 NodeProc::Gate { gate, vad_gate },
@@ -1441,8 +1455,9 @@ mod tests {
         assert_eq!(g.nodes.len(), 8);
 
         match g.node(2).unwrap().params {
-            NodeParams::HighPass { cutoff_hz, steep } => {
+            NodeParams::HighPass { cutoff_hz, steep, slope_db } => {
                 assert_eq!(cutoff_hz, 80.0);
+                assert_eq!(hpf_slope(steep, slope_db), 24, "older steep presets keep 24 dB/oct");
                 assert!(steep, "older high-pass should adopt the steeper default");
             }
             ref other => panic!("wrong node: {other:?}"),

@@ -13,6 +13,7 @@ pub mod denoise;
 pub mod detector;
 pub mod eq;
 pub mod gate;
+pub mod highpass;
 pub mod limiter;
 pub mod loudness;
 pub mod oversample;
@@ -25,7 +26,8 @@ pub mod smooth;
 pub mod svf;
 
 pub use autotune::{Autotune, Scale};
-pub use biquad::{Biquad, HighPass};
+pub use biquad::Biquad;
+pub use highpass::HighPass;
 pub use chorus::Chorus;
 pub use compressor::Compressor;
 pub use deesser::DeEsser;

@@ -1229,11 +1229,21 @@ impl FormantApp {
             });
 
             match &mut params {
-                NodeParams::HighPass { cutoff_hz, steep } => {
+                NodeParams::HighPass { cutoff_hz, steep, slope_db } => {
                     ui.add(egui::Slider::new(cutoff_hz, 20.0..=400.0).text("cutoff Hz"))
                         .on_hover_text("Frequencies below this are removed. ~80-120 Hz clears rumble without thinning your voice.");
-                    ui.checkbox(steep, "steep (24 dB/oct)")
-                        .on_hover_text("Twice as sharp a cutoff, so rumble just below the cutoff is actually gone instead of merely quieter. Leave this on unless you want a gentler, more gradual roll-off.");
+                    let mut slope = formant_core::graph::hpf_slope(*steep, *slope_db);
+                    egui::ComboBox::from_label("slope")
+                        .selected_text(format!("{slope} dB/oct"))
+                        .show_ui(ui, |ui| {
+                            for s in formant_core::dsp::highpass::SLOPES {
+                                ui.selectable_value(&mut slope, s, format!("{s} dB/oct"));
+                            }
+                        })
+                        .response
+                        .on_hover_text("How sharply frequencies below the cutoff are removed. 12 is gentle and natural; 18 is the classic console filter; 24 and up clear rumble just below the cutoff completely.");
+                    *slope_db = slope;
+                    *steep = slope >= 24;
                 }
                 NodeParams::Gate { threshold_db, range_db, attack_ms, hold_ms, release_ms, vad_gate, lookahead_ms } => {
                     ui.add(egui::Slider::new(threshold_db, -80.0..=0.0).text("threshold dB"))

@@ -155,7 +155,7 @@ pub fn set_load_error_reporter(report: fn(&str)) {
 /// and a gate. Nothing here is a matter of taste.
 fn front_end(hpf_hz: f32) -> Vec<NodeParams> {
     vec![
-        NodeParams::HighPass { cutoff_hz: hpf_hz, steep: true },
+        NodeParams::HighPass { cutoff_hz: hpf_hz, steep: true, slope_db: 18 },
         NodeKind::Denoise.default_params(),
         NodeKind::Gate.default_params(),
     ]
