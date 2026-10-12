@@ -1,6 +1,6 @@
 # Build the Formant MSI into dist/ using the WiX v5 toolset (`wix build`).
 param(
-    [string]$Version = '0.4.0',
+    [string]$Version = '1.0.0',
     [switch]$SkipBuild
 )
 $ErrorActionPreference = 'Stop'

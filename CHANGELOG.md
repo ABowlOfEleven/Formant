@@ -5,9 +5,12 @@ Changelog. The project uses semantic versioning.
 
 ## [Unreleased]
 
-A rebuild of the autotune node, a new studio-hardware look, and updated
-dependencies. Existing presets load and sound as before, except that the
-autotune correction is now more accurate.
+## [1.0.0]
+
+Formant 1.0. A rebuild of the autotune node, every built-in effect reworked
+with more controls, a new studio-hardware look, screen reader and keyboard
+support, a security pass, and updated dependencies. Existing presets load and
+sound as before, except that the autotune correction is now more accurate.
 
 ### Added
 
@@ -89,6 +92,23 @@ autotune correction is now more accurate.
 - Updated dependencies: eframe/egui 0.36, windows 0.62, ron 0.12, tray-icon
   0.26, rfd 0.17, json5 1, rtrb 0.4 and winreg 0.56. Saved presets, sessions
   and settings are unchanged on disk.
+
+### Security
+
+- Formant loads VST3 plugins only from the standard VST3 folders. Before, a
+  preset could name any DLL on the computer or on a network share, and
+  loading the preset ran it. Plugins installed the normal way are not
+  affected.
+- Presets and the saved session that contain NaN or infinite numbers are
+  refused. Before, one such value could crash audio processing or send noise
+  to the output. As a second guard, the output never sends a NaN or infinite
+  sample to the device.
+- Gate and limiter lookahead from a preset is limited to the supported range,
+  and a preset can hold at most 256 nodes.
+- Importing a preset never replaces a preset that you already have. It gets a
+  free name such as "Name (imported)", and save errors are shown.
+- An audio device without a name no longer crashes the device list.
+
 ## [0.4.0]
 
 A quality pass over the whole signal chain. Existing presets and sessions
