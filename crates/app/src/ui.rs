@@ -1460,11 +1460,11 @@ impl FormantApp {
     }
 
     fn tab_setup(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.add_space(4.0);
             // -- Presets --------------------------------------------------
-            theme::card(ui.style()).show(ui, |ui| {
+            hw::rack_panel(ui, "PRESETS", theme::EMBER, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("PRESETS").color(theme::CYAN).strong());
                     if ui.button("Refresh").clicked() {
                         self.presets = Preset::load_all();
                     }
@@ -1517,9 +1517,8 @@ impl FormantApp {
                 }
             });
 
-            ui.add_space(8.0);
-            theme::card(ui.style()).show(ui, |ui| {
-                ui.label(RichText::new("DEVICES").color(theme::CYAN).strong());
+            ui.add_space(14.0);
+            hw::rack_panel(ui, "DEVICES", theme::CYAN, |ui| {
                 self.virtual_cable_notice(ui);
                 ui.label(RichText::new(format!("mic now: {}", self.engine.mic_name)).color(theme::MUTED).small());
 
@@ -1594,10 +1593,9 @@ impl FormantApp {
                 });
             });
 
-            ui.add_space(8.0);
-            theme::card(ui.style()).show(ui, |ui| {
+            ui.add_space(14.0);
+            hw::rack_panel(ui, "HOTKEYS", theme::CYAN, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("HOTKEYS").color(theme::CYAN).strong());
                     if ui.button("Reset defaults").clicked() {
                         let d = formant_core::Bindings::default();
                         self.engine.bindings.set(Action::Ptt, d.ptt);
@@ -1614,7 +1612,7 @@ impl FormantApp {
                             ui.colored_label(theme::EMBER, "press a key...  (Esc cancels)");
                         } else {
                             let name = self.engine.bindings.get(action).map(hotkeys::key_name).unwrap_or_else(|| "-".into());
-                            ui.monospace(name);
+                            hw::readout(ui, &name, 110.0);
                         }
                         if ui.button("Rebind").clicked() {
                             self.rebinding = Some(action);
@@ -1627,9 +1625,8 @@ impl FormantApp {
                 }
             });
 
-            ui.add_space(8.0);
-            theme::card(ui.style()).show(ui, |ui| {
-                ui.label(RichText::new("STARTUP").color(theme::CYAN).strong());
+            ui.add_space(14.0);
+            hw::rack_panel(ui, "STARTUP", theme::CYAN, |ui| {
                 let mut autostart = self.autostart_on;
                 if ui
                     .checkbox(&mut autostart, "Start Formant when Windows starts")
@@ -1650,14 +1647,12 @@ impl FormantApp {
                 );
             });
 
-            ui.add_space(8.0);
-            theme::card(ui.style()).show(ui, |ui| {
-                ui.label(RichText::new("ABOUT").color(theme::CYAN).strong());
-                ui.label(
-                    RichText::new(format!("Formant {}", env!("CARGO_PKG_VERSION")))
-                        .color(theme::MUTED)
-                        .small(),
-                );
+            ui.add_space(14.0);
+            hw::rack_panel(ui, "ABOUT", theme::CYAN, |ui| {
+                ui.horizontal(|ui| {
+                    hw::silk_label(ui, "VERSION", 10.5);
+                    hw::readout(ui, env!("CARGO_PKG_VERSION"), 70.0);
+                });
                 ui.horizontal(|ui| {
                     if ui.button("Check for updates").on_hover_text("Opens the Releases page in your browser. Formant never checks on its own.").clicked() {
                         crate::platform::open_url("https://github.com/ABowlOfEleven/Formant/releases");

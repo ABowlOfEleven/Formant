@@ -522,6 +522,18 @@ pub fn rack_backdrop(painter: &egui::Painter, rect: Rect) {
     painter.add(gradient_rect(rect, Color32::from_rgb(19, 22, 26), Color32::from_rgb(8, 9, 11)));
 }
 
+/// A small amber display showing `text`, recessed like the knob readouts.
+pub fn readout(ui: &mut Ui, text: &str, width: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 20.0), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect.expand(1.5), CornerRadius::same(4), black(180));
+    painter.rect_filled(rect, CornerRadius::same(3), GLASS);
+    painter.text(rect.center(), Align2::CENTER_CENTER, text, FontId::monospace(12.0), READOUT);
+    let gloss = Rect::from_min_max(rect.min + Vec2::new(1.0, 1.0), Pos2::new(rect.right() - 1.0, rect.center().y));
+    painter.add(gradient_rect(gloss, white(10), white(0)));
+    resp
+}
+
 /// Text in the silkscreen style, laid out as a normal widget.
 pub fn silk_label(ui: &mut Ui, text: &str, size: f32) -> Response {
     let galley_w = text.len() as f32 * size * 0.62;

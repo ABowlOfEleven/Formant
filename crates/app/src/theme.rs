@@ -7,7 +7,6 @@ use eframe::egui::{
 pub const BG: Color32 = Color32::from_rgb(7, 10, 14);
 pub const PANEL: Color32 = Color32::from_rgb(13, 18, 24);
 pub const CARD: Color32 = Color32::from_rgb(18, 25, 32);
-pub const CARD_HI: Color32 = Color32::from_rgb(25, 35, 44);
 pub const LINE: Color32 = Color32::from_rgb(38, 52, 62);
 pub const CYAN: Color32 = Color32::from_rgb(45, 212, 238);
 pub const EMBER: Color32 = Color32::from_rgb(255, 138, 40);
@@ -87,17 +86,26 @@ pub fn apply(ctx: &egui::Context) {
     ] {
         w.corner_radius = r;
     }
+    // Stock widgets follow the hardware look of the hand-painted ones: buttons
+    // are metal caps with a dark seam around them, text fields and dropdown
+    // wells are recessed glass.
     v.widgets.noninteractive.bg_fill = PANEL;
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, MUTED);
-    v.widgets.inactive.bg_fill = CARD_HI;
+    v.widgets.inactive.bg_fill = Color32::from_rgb(56, 62, 70);
+    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(56, 62, 70);
     v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE);
-    v.widgets.hovered.bg_fill = lerp(CARD_HI, CYAN, 0.10);
-    v.widgets.hovered.fg_stroke = Stroke::new(1.0, CYAN);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, lerp(LINE, CYAN, 0.4));
-    v.widgets.active.bg_fill = lerp(CARD_HI, CYAN, 0.18);
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_black_alpha(200));
+    v.widgets.hovered.bg_fill = Color32::from_rgb(68, 75, 84);
+    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(68, 75, 84);
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, lerp(Color32::BLACK, CYAN, 0.45));
+    v.widgets.active.bg_fill = Color32::from_rgb(38, 42, 48);
+    v.widgets.active.weak_bg_fill = Color32::from_rgb(38, 42, 48);
     v.widgets.active.fg_stroke = Stroke::new(1.0, CYAN);
     v.widgets.active.bg_stroke = Stroke::new(1.0, CYAN);
+    v.widgets.open.weak_bg_fill = Color32::from_rgb(38, 42, 48);
+    v.extreme_bg_color = Color32::from_rgb(7, 10, 12);
+    v.text_edit_bg_color = Some(Color32::from_rgb(7, 10, 12));
 
     v.selection.bg_fill = CYAN.gamma_multiply(0.30);
     v.selection.stroke = Stroke::new(1.0, CYAN);
@@ -108,10 +116,15 @@ pub fn apply(ctx: &egui::Context) {
 }
 
 /// A themed card frame for grouping controls.
+///
+/// Cards are plain metal plates (a solid fill, since a frame can't carry a
+/// gradient) with the same dark seam and drop shadow as the hand-painted
+/// faceplates, so panels that still use them sit in the same rack.
 pub fn card(style: &egui::Style) -> egui::Frame {
     egui::Frame::group(style)
-        .fill(CARD)
-        .stroke(Stroke::new(1.0, LINE))
-        .corner_radius(CornerRadius::same(9))
-        .inner_margin(Margin::same(12))
+        .fill(Color32::from_rgb(36, 40, 46))
+        .stroke(Stroke::new(1.0, Color32::from_black_alpha(220)))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::same(14))
+        .shadow(egui::epaint::Shadow { offset: [0, 5], blur: 14, spread: 0, color: Color32::from_black_alpha(140) })
 }
